@@ -203,13 +203,14 @@ from .concatdata import ConcatenatedDataSet
 from .h5datav1 import H5DataV1
 from .h5datav2 import H5DataV2
 from .h5datav3 import H5DataV3
+from .h5datav4 import H5DataV4
 from .sensordata import _sensor_completer
 
 # Clean up top-level namespace a bit
 _dataset, _concatdata, _sensordata = dataset, concatdata, sensordata
-_h5datav1, _h5datav2, _h5datav3 = h5datav1, h5datav2, h5datav3
+_h5datav1, _h5datav2, _h5datav3, _h5datav4 = h5datav1, h5datav2, h5datav3, h5datav4
 _categorical, _lazy_indexer = categorical, lazy_indexer
-del dataset, concatdata, h5datav1, h5datav2, h5datav3, sensordata, categorical, lazy_indexer
+del dataset, concatdata, h5datav1, h5datav2, h5datav3, h5datav4, sensordata, categorical, lazy_indexer
 
 # Attempt to register custom IPython tab completer for sensor cache name lookups
 try:
@@ -258,7 +259,8 @@ else:
 #--- Top-level functions passed on to the appropriate format handler
 #------------------------------------------------------------------------------
 
-formats = [H5DataV3, H5DataV2, H5DataV1]
+formats = [H5DataV4, H5DataV3, H5DataV2, H5DataV1]
+
 
 def _file_action(action, filename, *args, **kwargs):
     """Perform action on data file using the appropriate format class.
@@ -322,12 +324,12 @@ def open(filename, ref_ant='', time_offset=0.0, **kwargs):
         dataset = _file_action('__call__', f, ref_ant, time_offset, **kwargs)
         datasets.append(dataset)
     return datasets[0] if isinstance(filename, basestring) else \
-           ConcatenatedDataSet(datasets)
+        ConcatenatedDataSet(datasets)
 
 
 def get_ants(filename):
     """Quick look function to get the list of antennas in a data file.
-  
+
     Parameters
     ----------
     filename : string
