@@ -154,16 +154,14 @@ class H5DataV4(DataSet):
         # Load main HDF5 groups
         # data_group, sensors_group, config_group = f['Data'], f['MetaData/Sensors'], f['MetaData/Configuration']
         data_group = f['Data']
-        # markup_group = f['Markup']
-        # # Get observation script parameters, with defaults
-        # for k, v in config_group['Observation'].attrs.iteritems():
-        #     # For KAT-7 (v2.1) data, strip the 'script_' prefix from most parameters
-        #     k = k if self.version > '2.1' or k in ('script_name', 'script_arguments') else k[7:]
-        #     self.obs_params[str(k)] = v
-        # self.observer = self.obs_params.get('observer', '')
-        # self.description = self.obs_params.get('description', '')
-        # self.experiment_id = self.obs_params.get('experiment_id', '')
-        #
+        markup_group = f['Markup']
+        # Get observation script parameters, with defaults
+        for k, v in config_group['Observation'].attrs.iteritems():
+             self.obs_params[str(k)] = v
+        self.observer = self.obs_params.get('observer', '')
+        self.description = self.obs_params.get('description', '')
+        self.experiment_id = self.obs_params.get('experiment_id', '')
+
         # ------ Extract timestamps ------
 
         # self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
