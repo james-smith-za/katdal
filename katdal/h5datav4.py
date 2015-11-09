@@ -166,7 +166,7 @@ class H5DataV4(DataSet):
 
         # self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
         # Obtain visibility data and timestamps
-        self._vis = data_group['correlator_data']
+        #self._vis = data_group['correlator_data']
         self._timestamps = data_group['timestamps']
         num_dumps = len(self._timestamps)
         if num_dumps != self._vis.shape[0]:
@@ -343,6 +343,7 @@ class H5DataV4(DataSet):
         """Open file and do basic version and augmentation sanity check."""
         f = h5py.File(filename, mode)
         version = f.attrs.get('version', '1.x')
+        print "Version: %s"%(version)
         if not version.startswith('4.'):
             raise WrongVersion("Attempting to load version '%s' file with version 2 loader" % (version,))
         # if 'augment_ts' not in f.attrs:
