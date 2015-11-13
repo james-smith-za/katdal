@@ -152,26 +152,28 @@ class H5DataV4(DataSet):
         f = self.file
 
         # Load main HDF5 groups
-        # data_group, sensors_group, config_group = f['Data'], f['MetaData/Sensors'], f['MetaData/Configuration']
-        data_group = f['Data']
-        markup_group = f['Markup']
+        #data_group, sensors_group, config_group = f['Data'], f['MetaData/Sensors'], f['MetaData/Configuration']
+        data_group = f["Data"]
+        config_group = f["MetaData/Configuration"]
+        sensors_group = f["MetaData/Sensors"]
+        markup_group = f["Markup"]
         # Get observation script parameters, with defaults
         for k, v in config_group['Observation'].attrs.iteritems():
-             self.obs_params[str(k)] = v
+            self.obs_params[str(k)] = v
         self.observer = self.obs_params.get('observer', '')
         self.description = self.obs_params.get('description', '')
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
 
-        # self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
+        self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
         # Obtain visibility data and timestamps
-        #self._vis = data_group['correlator_data']
-        self._timestamps = data_group['timestamps']
+        self._vis = data_group['SingleDishData']  # TODO: Fix this.
+        self._timestamps = data_group['Timestamps']
         num_dumps = len(self._timestamps)
-        if num_dumps != self._vis.shape[0]:
-            raise BrokenFile('Number of timestamps received from k7_capture '
-                             '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
+        # if num_dumps != self._vis.shape[0]:
+        #     raise BrokenFile('Number of timestamps received from k7_capture '
+        #                      '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
         # Discard the last sample if the timestamp is a duplicate (caused by stop packet in k7_capture)
         num_dumps = (num_dumps - 1) if num_dumps > 1 and (self._timestamps[-1] == self._timestamps[-2]) else num_dumps
         # Do quick test for uniform spacing of timestamps (necessary but not sufficient)
@@ -204,88 +206,98 @@ class H5DataV4(DataSet):
 
         # ------ Extract flags ------
 
-        # # Check if flag group is present, else use dummy flag data
-        # self._flags = markup_group['flags'] if 'flags' in markup_group else \
-        #     dummy_dataset('dummy_flags', shape=self._vis.shape[:-1], dtype=np.uint8, value=0)
-        # # Obtain flag descriptions from file or recreate default flag description table
-        # self._flags_description = markup_group['flags_description'] if 'flags_description' in markup_group else \
-        #     np.array(zip(FLAG_NAMES, FLAG_DESCRIPTIONS))
+        # Check if flag group is present, else use dummy flag data
+        self._flags = markup_group['flags'] if 'flags' in markup_group else \
+            dummy_dataset('dummy_flags', shape=self._vis.shape[:-1], dtype=np.uint8, value=0)
+        # Obtain flag descriptions from file or recreate default flag description table
+        self._flags_description = markup_group['flags_description'] if 'flags_description' in markup_group else \
+            np.array(zip(FLAG_NAMES, FLAG_DESCRIPTIONS))
 
         # ------ Extract weights ------
 
-        # # check if weight group present, else use dummy weight data
-        # self._weights = markup_group['weights'] if 'weights' in markup_group else \
-        #     dummy_dataset('dummy_weights', shape=self._vis.shape[:-1] + (1,), dtype=np.float32, value=1.0)
-        # self._weights_description = np.array(zip(WEIGHT_NAMES, WEIGHT_DESCRIPTIONS))
+        # check if weight group present, else use dummy weight data
+        self._weights = markup_group['weights'] if 'weights' in markup_group else \
+            dummy_dataset('dummy_weights', shape=self._vis.shape[:-1] + (1,), dtype=np.float32, value=1.0)
+        self._weights_description = np.array(zip(WEIGHT_NAMES, WEIGHT_DESCRIPTIONS))
 
         # ------ Extract sensors ------
 
         # Populate sensor cache with all HDF5 datasets below sensor group that fit the description of a sensor
-        # cache = {}
+        cache = {}
 
-        # def register_sensor(name, obj):
-        #     """A sensor is defined as a non-empty dataset with expected dtype."""
-        #     if isinstance(obj, h5py.Dataset) and obj.shape != () and obj.dtype.names == ('timestamp', 'value', 'status'):
-        #         # Rename pedestal sensors from the old regime to become sensors of the corresponding antenna
-        #         cache[name] = SensorData(obj, name)
-        # sensors_group.visititems(register_sensor)
-        # # Use estimated data timestamps for now, to speed up data segmentation
-        # self.sensor = SensorCache(cache, data_timestamps, self.dump_period, keep=self._time_keep,
-        #                           props=SENSOR_PROPS, virtual=VIRTUAL_SENSORS, aliases=SENSOR_ALIASES)
+        def register_sensor(name, obj):
+            """A sensor is defined as a non-empty dataset with expected dtype."""
+            if isinstance(obj, h5py.Dataset) and obj.shape != () and obj.dtype.names == ('timestamp', 'value', 'status'):
+                # Rename pedestal sensors from the old regime to become sensors of the corresponding antenna
+                cache[name] = SensorData(obj, name)
+        sensors_group.visititems(register_sensor)
+        # Use estimated data timestamps for now, to speed up data segmentation
+        self.sensor = SensorCache(cache, data_timestamps, self.dump_period, keep=self._time_keep,
+                                  props=SENSOR_PROPS, virtual=VIRTUAL_SENSORS, aliases=SENSOR_ALIASES)
 
         # ------ Extract subarrays ------
 
-        # # By default, only pick antennas that were in use by the script
-        # script_ants = config_group['Observation'].attrs['script_ants'].split(',')
-        # self.ref_ant = script_ants[0] if not ref_ant else ref_ant
-        # # Original list of correlation products as pairs of input labels
-        # corrprods = get_single_value(config_group['Correlator'], 'bls_ordering')
-        # if len(corrprods) != self._vis.shape[2]:
-        #     # Apply k7_capture baseline mask after the fact, in the hope that it fixes correlation product mislabelling
-        #     corrprods = np.array([cp for cp in corrprods if cp[0][:-1] in script_ants and cp[1][:-1] in script_ants])
-        #     # If there is still a mismatch between labels and data shape, file is considered broken (maybe bad labels?)
-        #     if len(corrprods) != self._vis.shape[2]:
-        #         raise BrokenFile('Number of baseline labels (containing expected antenna names) '
-        #                          'received from correlator (%d) differs from number of baselines in data (%d)' %
-        #                          (len(corrprods), self._vis.shape[2]))
-        #     else:
-        #         logger.warning('Reapplied k7_capture baseline mask to fix unexpected number of baseline labels')
-        # # All antennas in configuration as katpoint Antenna objects
+        # By default, only pick antennas that were in use by the script
+        script_ants = config_group['Observation'].attrs['ants'].split(',')
+        self.ref_ant = script_ants[0] if not ref_ant else ref_ant
+        # Original list of correlation products as pairs of input labels
+        single_dish_prods = get_single_value(config_group['Correlator'], 'bls_ordering')
+        if len(single_dish_prods) != self._vis.shape[2]:
+            raise BrokenFile('Number of data labels (containing expected antenna names) '
+                             'received from h5 file (%d) differs from number of baselines in data (%d)' %
+                             (len(single_dish_prods), self._vis.shape[2]))
+        # All antennas in configuration as katpoint Antenna objects
         # ants = [katpoint.Antenna(config_group['Antennas'][name].attrs['description'])
         #         for name in config_group['Antennas']]
-        # self.subarrays = [Subarray(ants, corrprods)]
-        # self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
-        # self.sensor['Observation/subarray_index'] = CategoricalData([0], [0, len(data_timestamps)])
-        # # Store antenna objects in sensor cache too, for use in virtual sensor calculations
-        # for ant in ants:
-        #     self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
+
+        ants = []
+        for antenna in config_group["Antennas"]:
+            name           = config_group["Antennas"][antenna].attrs['name']
+            latitude       = config_group["Antennas"][antenna].attrs['latitude']
+            longitude      = config_group["Antennas"][antenna].attrs['longitude']
+            diameter       = config_group["Antennas"][antenna].attrs['diameter']
+            delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
+            pointing_model = config_group["Antennas"][antenna].attrs['pointing_model']
+            beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
+
+            ants.append(katpoint.Antenna(name, latitude, longitude, diameter, delay_model, pointing_model, beamwidth))
+
+        self.subarrays = [Subarray(ants, single_dish_prods)]
+        self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
+        self.sensor['Observation/subarray_index'] = CategoricalData([0], [0, len(data_timestamps)])
+        # Store antenna objects in sensor cache too, for use in virtual sensor calculations
+        for ant in ants:
+            self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
 
         # ------ Extract spectral windows / frequencies ------
 
         # # Ideally we would like to use calculated center-frequency-hz sensor produced by k7_capture (better for nband)
         # if self.version >= '2.1':
-        #     centre_freq = self.sensor.get('RFE/center-frequency-hz')
+        centre_freq = self.sensor.get('RFE/center-frequency-hz')
         # else:
         #     # Fall back to basic RFE7 LO frequency, as this supported multiple spectral windows before k7_capture did
         #     # This assumes WBC mode, though (NBC modes only fully supported since HDF5 v2.1)
         #     centre_freq = self.sensor.get('RFE/rfe7.lo1.frequency')
         #     centre_freq.unique_values -= 4200e6
-        # num_chans = get_single_value(config_group['Correlator'], 'n_chans')
-        # if num_chans != self._vis.shape[1]:
-        #     raise BrokenFile('Number of channels received from correlator '
-        #                      '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
-        # bandwidth = get_single_value(config_group['Correlator'], 'bandwidth')
-        # channel_width = bandwidth / num_chans
+        num_chans = get_single_value(config_group['Correlator'], 'n_chans')
+        if num_chans != self._vis.shape[1]:
+            raise BrokenFile('Number of channels received from correlator '
+                             '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
+        bandwidth = get_single_value(config_group['Correlator'], 'bandwidth')
+        channel_width = bandwidth / num_chans
         # try:
-        #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]
+        #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]  # Not too sure what this "mode" is yet, commenting out for now.
         # except KeyError, IndexError:
         #     # Guess the mode for version 2.0 files that haven't been re-augmented
         #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
         # self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
         #                          for spw_centre in centre_freq.unique_values]
-        # self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
-        #                                                  centre_freq.events)
-        # self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
+        self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans)
+                                 for spw_centre in centre_freq.unique_values]
+
+        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
+                                                         centre_freq.events)
+        self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
 
         # ------ Extract scans / compound scans / targets ------
 
@@ -343,7 +355,6 @@ class H5DataV4(DataSet):
         """Open file and do basic version and augmentation sanity check."""
         f = h5py.File(filename, mode)
         version = f.attrs.get('version', '1.x')
-        print "Version: %s"%(version)
         if not version.startswith('4.'):
             raise WrongVersion("Attempting to load version '%s' file with version 2 loader" % (version,))
         # if 'augment_ts' not in f.attrs:
@@ -428,7 +439,7 @@ class H5DataV4(DataSet):
         """
         # Avoid storing reference to self in transform closure below, as this hinders garbage collection
         dump_period, time_offset = self.dump_period, self.time_offset
-        extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)
+        extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)  # TODO: Might need to look at this.
         return LazyIndexer(self._timestamps, keep=self._time_keep, transforms=[extract_time])
 
     @property
@@ -451,6 +462,8 @@ class H5DataV4(DataSet):
         data array itself from the indexer `x`, do `x[:]` or perform any other
         form of indexing on it. Only then will data be loaded into memory.
 
+        Something like this needs to go here somewhere:
+        lr = np.concatenate((ll[...,np.newaxis] ,rr[...,np.newaxis]), axis=2)
         """
         def _extract_vis(vis, keep):
             return vis.view(np.int32)[slice(None)]
