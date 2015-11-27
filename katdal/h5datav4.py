@@ -168,7 +168,7 @@ class H5DataV4(DataSet):
 
         self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
         # Obtain visibility data and timestamps
-        self._vis = data_group['SingleDishData']  # TODO: Fix this.
+        self._vis = data_group['SingleDishData']
         self._timestamps = data_group['Timestamps']
         num_dumps = len(self._timestamps)
         # if num_dumps != self._vis.shape[0]:
@@ -301,54 +301,55 @@ class H5DataV4(DataSet):
 
         # ------ Extract scans / compound scans / targets ------
 
-        # # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
-        # scan = self.sensor.get('Antennas/%s/activity' % (self.ref_ant,))
-        # # If the antenna starts slewing on the second dump, incorporate the first dump into the slew too.
-        # # This scenario typically occurs when the first target is only set after the first dump is received.
-        # # The workaround avoids putting the first dump in a scan by itself, typically with an irrelevant target.
-        # if len(scan) > 1 and scan.events[1] == 1 and scan[1] == 'slew':
-        #     scan.events, scan.indices = scan.events[1:], scan.indices[1:]
-        #     scan.events[0] = 0
-        # # Use labels to partition the data set into compound scans
-        # label = sensor_to_categorical(markup_group['labels']['timestamp'], markup_group['labels']['label'],
-        #                               data_timestamps, self.dump_period, **SENSOR_PROPS['Observation/label'])
-        # # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
-        # # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
-        # if len(label.unique_values) > 1:
-        #     label.remove('')
-        # # Create duplicate scan events where labels are set during a scan (i.e. not at start of scan)
-        # # ASSUMPTION: Number of scans >= number of labels (i.e. each label should introduce a new scan)
-        # scan.add_unmatched(label.events)
-        # self.sensor['Observation/scan_state'] = scan
-        # self.sensor['Observation/scan_index'] = CategoricalData(range(len(scan)), scan.events)
-        # # Move proper label events onto the nearest scan start
-        # # ASSUMPTION: Number of labels <= number of scans (i.e. only a single label allowed per scan)
-        # label.align(scan.events)
-        # # If one or more scans at start of data set have no corresponding label, add a default label for them
-        # if label.events[0] > 0:
-        #     label.add(0, '')
-        # self.sensor['Observation/label'] = label
-        # self.sensor['Observation/compscan_index'] = CategoricalData(range(len(label)), label.events)
-        # # Use the target sensor of reference antenna to set the target for each scan
-        # target = self.sensor.get('Antennas/%s/target' % (self.ref_ant,))
-        # # Move target events onto the nearest scan start
-        # # ASSUMPTION: Number of targets <= number of scans (i.e. only a single target allowed per scan)
-        # target.align(scan.events)
-        # self.sensor['Observation/target'] = target
-        # self.sensor['Observation/target_index'] = CategoricalData(target.indices, target.events)
-        # # Set up catalogue containing all targets in file, with reference antenna as default antenna
-        # self.catalogue.add(target.unique_values)
-        # self.catalogue.antenna = self.sensor['Antennas/%s/antenna' % (self.ref_ant,)][0]
-        # # Ensure that each target flux model spans all frequencies in data set if possible
-        # self._fix_flux_freq_range()
-        #
-        # # Avoid storing reference to self in transform closure below, as this hinders garbage collection
-        # dump_period, time_offset = self.dump_period, self.time_offset
-        # # Restore original (slow) timestamps so that subsequent sensors (e.g. pointing) will have accurate values
-        # extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)
-        # self.sensor.timestamps = LazyIndexer(self._timestamps, keep=slice(num_dumps), transforms=[extract_time])
-        # # Apply default selection and initialise all members that depend on selection in the process
-        # self.select(spw=0, subarray=0, ants=script_ants)
+        # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
+        scan = self.sensor.get('Antennas/%s/activity' % (self.ref_ant,))
+        # If the antenna starts slewing on the second dump, incorporate the first dump into the slew too.
+        # This scenario typically occurs when the first target is only set after the first dump is received.
+        # The workaround avoids putting the first dump in a scan by itself, typically with an irrelevant target.
+        if len(scan) > 1 and scan.events[1] == 1 and scan[1] == 'slew':
+            scan.events, scan.indices = scan.events[1:], scan.indices[1:]
+            scan.events[0] = 0
+        # Use labels to partition the data set into compound scans
+        label = sensor_to_categorical(markup_group['labels']['timestamp'], markup_group['labels']['label'],
+                                      data_timestamps, self.dump_period, **SENSOR_PROPS['Observation/label'])
+        # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
+        # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
+        # TODO: Decide whether to keep this check.
+        if len(label.unique_values) > 1:
+            label.remove('')
+        # Create duplicate scan events where labels are set during a scan (i.e. not at start of scan)
+        # ASSUMPTION: Number of scans >= number of labels (i.e. each label should introduce a new scan)
+        scan.add_unmatched(label.events)
+        self.sensor['Observation/scan_state'] = scan
+        self.sensor['Observation/scan_index'] = CategoricalData(range(len(scan)), scan.events)
+        # Move proper label events onto the nearest scan start
+        # ASSUMPTION: Number of labels <= number of scans (i.e. only a single label allowed per scan)
+        label.align(scan.events)
+        # If one or more scans at start of data set have no corresponding label, add a default label for them
+        if label.events[0] > 0:
+            label.add(0, '')
+        self.sensor['Observation/label'] = label
+        self.sensor['Observation/compscan_index'] = CategoricalData(range(len(label)), label.events)
+        # Use the target sensor of reference antenna to set the target for each scan
+        target = self.sensor.get('Antennas/%s/target' % (self.ref_ant,))
+        # Move target events onto the nearest scan start
+        # ASSUMPTION: Number of targets <= number of scans (i.e. only a single target allowed per scan)
+        target.align(scan.events)
+        self.sensor['Observation/target'] = target
+        self.sensor['Observation/target_index'] = CategoricalData(target.indices, target.events)
+        # Set up catalogue containing all targets in file, with reference antenna as default antenna
+        self.catalogue.add(target.unique_values)
+        self.catalogue.antenna = self.sensor['Antennas/%s/antenna' % (self.ref_ant,)][0]
+        # Ensure that each target flux model spans all frequencies in data set if possible
+        self._fix_flux_freq_range()
+
+        # Avoid storing reference to self in transform closure below, as this hinders garbage collection
+        dump_period, time_offset = self.dump_period, self.time_offset
+        # Restore original (slow) timestamps so that subsequent sensors (e.g. pointing) will have accurate values
+        extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)
+        self.sensor.timestamps = LazyIndexer(self._timestamps, keep=slice(num_dumps), transforms=[extract_time])
+        # Apply default selection and initialise all members that depend on selection in the process
+        self.select(spw=0, subarray=0, ants=script_ants)
 
     @staticmethod
     def _open(filename, mode='r'):
@@ -357,75 +358,76 @@ class H5DataV4(DataSet):
         version = f.attrs.get('version', '1.x')
         if not version.startswith('4.'):
             raise WrongVersion("Attempting to load version '%s' file with version 2 loader" % (version,))
-        # if 'augment_ts' not in f.attrs:
-        #     raise BrokenFile('HDF5 file not augmented - please run '
-        #                      'k7_augment.py (provided by katcapture package)')
+        # TODO: decide whether to keep this.
+        if 'augment_ts' not in f.attrs:
+            raise BrokenFile('HDF5 file not augmented - please run '
+                             'k7_augment.py (provided by katcapture package)')
         return f, version
 
-    # @staticmethod
-    # def _get_ants(filename):
-    #     """Quick look function to get the list of antennas in a data file.
-    #
-    #     This is intended to be called without createing a full katdal object.
-    #
-    #     Parameters
-    #     ----------
-    #     filename : string
-    #         Data file name
-    #
-    #     Returns
-    #     -------
-    #     antennas : list of :class:'katpoint.Antenna' objects
-    #
-    #     """
-    #     f, version = H5DataV4._open(filename)
-    #     config_group = f['MetaData/Configuration']
-    #     all_ants = [ant for ant in config_group['Antennas']]
-    #     script_ants = config_group['Observation'].attrs.get('script_ants')
-    #     script_ants = script_ants.split(',') if script_ants else all_ants
-    #     return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
-    #
-    # @staticmethod
-    # def _get_targets(filename):
-    #     """Quick look function to get the list of targets in a data file.
-    #
-    #     This is intended to be called without createing a full katdal object.
-    #
-    #     Parameters
-    #     ----------
-    #     filename : string
-    #         Data file name
-    #
-    #     Returns
-    #     -------
-    #     targets : :class:'katpoint.Catalogue' object
-    #         All targets in file
-    #
-    #     """
-    #     f, version = H5DataV4._open(filename)
-    #     # Use the delay-tracking centre as the one and only target
-    #     # Try two different sensors for the DBE target
-    #     try:
-    #         target_list = f['MetaData/Sensors/DBE/target']
-    #     except Exception:
-    #         # Since h5py errors have varied over the years, we need Exception
-    #         target_list = f['MetaData/Sensors/Beams/Beam0/target']
-    #     all_target_strings = [target_data[1] for target_data in target_list]
-    #     return katpoint.Catalogue(np.unique(all_target_strings))
+    @staticmethod
+    def _get_ants(filename):
+        """Quick look function to get the list of antennas in a data file.
 
-    # def __str__(self):
-    #     """Verbose human-friendly string representation of data set."""
-    #     descr = [super(H5DataV4, self).__str__()]
-    #     # append the process_log, if it exists, for non-concatenated h5 files
-    #     if 'process_log' in self.file['History']:
-    #         descr.append('-------------------------------------------------------------------------------')
-    #         descr.append('Process log:')
-    #         for proc in self.file['History']['process_log']:
-    #             param_list = '%15s:' % proc[0]
-    #             for param in proc[1].split(','):
-    #                 param_list += '  %s' % param
-    #             descr.append(param_list)
-    #     return '\n'.join(descr)
+        This is intended to be called without createing a full katdal object.
+
+        Parameters
+        ----------
+        filename : string
+            Data file name
+
+        Returns
+        -------
+        antennas : list of :class:'katpoint.Antenna' objects
+
+        """
+        f, version = H5DataV4._open(filename)
+        config_group = f['MetaData/Configuration']
+        all_ants = [ant for ant in config_group['Antennas']]
+        script_ants = config_group['Observation'].attrs.get('script_ants')
+        script_ants = script_ants.split(',') if script_ants else all_ants
+        return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
+
+    @staticmethod
+    def _get_targets(filename):
+        """Quick look function to get the list of targets in a data file.
+
+        This is intended to be called without createing a full katdal object.
+
+        Parameters
+        ----------
+        filename : string
+            Data file name
+
+        Returns
+        -------
+        targets : :class:'katpoint.Catalogue' object
+            All targets in file
+
+        """
+        f, version = H5DataV4._open(filename)
+        # Use the delay-tracking centre as the one and only target
+        # Try two different sensors for the DBE target
+        try:
+            target_list = f['MetaData/Sensors/DBE/target']
+        except Exception:
+            # Since h5py errors have varied over the years, we need Exception
+            target_list = f['MetaData/Sensors/Beams/Beam0/target']
+        all_target_strings = [target_data[1] for target_data in target_list]
+        return katpoint.Catalogue(np.unique(all_target_strings))
+
+    def __str__(self):
+        """Verbose human-friendly string representation of data set."""
+        descr = [super(H5DataV4, self).__str__()]
+        # append the process_log, if it exists, for non-concatenated h5 files
+        if 'process_log' in self.file['History']:
+            descr.append('-------------------------------------------------------------------------------')
+            descr.append('Process log:')
+            for proc in self.file['History']['process_log']:
+                param_list = '%15s:' % proc[0]
+                for param in proc[1].split(','):
+                    param_list += '  %s' % param
+                descr.append(param_list)
+        return '\n'.join(descr)
 
     @property
     def timestamps(self):
@@ -453,6 +455,7 @@ class H5DataV4(DataSet):
         dimension, frequency along the second dimension. The third dimension
         consists of LL autocorrelation, RR autocorrelation, Stokes Q and
         Stokes U respectively.
+
         TODO: Need to think about the rest of this functionality. Perhaps that's why there was the whole "keep" thing.
         The returned array always has all three dimensions,
         even for scalar (single) values. The number of integrations *T* matches
