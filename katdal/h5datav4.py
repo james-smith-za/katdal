@@ -112,12 +112,12 @@ def dummy_dataset(name, shape, dtype, value):
     return dummy_file.create_dataset(name, shape=shape, maxshape=shape, dtype=dtype, fillvalue=value, compression='gzip')
 
 #--------------------------------------------------------------------------------------------------
-#--- CLASS :  H5DataV2
+#--- CLASS :  H5DataV2_5
 #--------------------------------------------------------------------------------------------------
 
-
-class H5DataV4(DataSet):
-    """Load HDF5 format version 2 file produced by KAT-7 correlator.
+# TODO: Change everything from v4 to v2.5 or v2_5.
+class H5DataV2_5(DataSet):
+    """Load HDF5 format version 2.5 file produced by AVN DBE.
 
     For more information on attributes, see the :class:`DataSet` docstring.
 
@@ -148,7 +148,7 @@ class H5DataV4(DataSet):
         DataSet.__init__(self, filename, ref_ant, time_offset)
 
         # Load file
-        self.file, self.version = H5DataV4._open(filename, mode)
+        self.file, self.version = H5DataV2_5._open(filename, mode)
         f = self.file
 
         # Load main HDF5 groups
@@ -168,7 +168,8 @@ class H5DataV4(DataSet):
 
         self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
         # Obtain visibility data and timestamps
-        self._vis = data_group['SingleDishData']
+        self._vis = data_group['VisData']
+        self._stokes = data_group['StokesData']
         self._timestamps = data_group['Timestamps']
         num_dumps = len(self._timestamps)
         # if num_dumps != self._vis.shape[0]:
@@ -356,8 +357,8 @@ class H5DataV4(DataSet):
         """Open file and do basic version and augmentation sanity check."""
         f = h5py.File(filename, mode)
         version = f.attrs.get('version', '1.x')
-        if not version.startswith('4.'):
-            raise WrongVersion("Attempting to load version '%s' file with version 2 loader" % (version,))
+        if not version == '2.5':
+            raise WrongVersion("Attempting to load version '%s' file with version 2.5 loader" % (version,))
         # TODO: decide whether to keep this.
         if 'augment_ts' not in f.attrs:
             raise BrokenFile('HDF5 file not augmented - please run '
@@ -380,7 +381,7 @@ class H5DataV4(DataSet):
         antennas : list of :class:'katpoint.Antenna' objects
 
         """
-        f, version = H5DataV4._open(filename)
+        f, version = H5DataV2_5._open(filename)
         config_group = f['MetaData/Configuration']
         all_ants = [ant for ant in config_group['Antennas']]
         script_ants = config_group['Observation'].attrs.get('script_ants')
@@ -404,7 +405,7 @@ class H5DataV4(DataSet):
             All targets in file
 
         """
-        f, version = H5DataV4._open(filename)
+        f, version = H5DataV2_5._open(filename)
         # Use the delay-tracking centre as the one and only target
         # Try two different sensors for the DBE target
         try:
@@ -417,7 +418,7 @@ class H5DataV4(DataSet):
 
     def __str__(self):
         """Verbose human-friendly string representation of data set."""
-        descr = [super(H5DataV4, self).__str__()]
+        descr = [super(H5DataV2_5, self).__str__()]
         # append the process_log, if it exists, for non-concatenated h5 files
         if 'process_log' in self.file['History']:
             descr.append('-------------------------------------------------------------------------------')
@@ -469,9 +470,19 @@ class H5DataV4(DataSet):
         lr = np.concatenate((ll[...,np.newaxis] ,rr[...,np.newaxis]), axis=2)
         """
         def _extract_vis(vis, keep):
-            return vis.view(np.int32)[slice(None)]
-        extract_vis = LazyTransform('extract_vis', _extract_vis, lambda shape: shape, np.int32)
+            return vis.astype(np.float64)[slice(None)]
+        extract_vis = LazyTransform('extract_vis', _extract_vis, lambda shape: shape, np.float64)
         return LazyIndexer(self._vis, transforms=[extract_vis])
+
+    @property
+    def stokes(self):
+        """Single-dish observational data, 32-bit signed integer, LL, RR, Q, U.
+        """
+        def _extract_stokes(stokes, keep):
+            return stokes.astype(np.float64)[slice(None)]
+        extract_stokes = LazyTransform('extract_stokes', _extract_stokes, lambda shape: shape, np.float64)
+        return LazyIndexer(self._stokes, transforms=[extract_stokes])
+
 
     # def weights(self, names=None):
     #     """Visibility weights as a function of time, frequency and baseline.

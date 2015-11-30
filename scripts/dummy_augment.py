@@ -9,7 +9,7 @@ mode = sys.argv[2]
 if not (mode == "raster" or mode == "track"):
     raise ValueError("%s not an appropriate augmentation mode. Expected raster or track."%(mode))
 
-h5file.attrs["version"] = "4.0"
+h5file.attrs["version"] = "5.0"
 h5file.attrs["augment_ts"] = time.time()
 
 h5file.create_group("Markup")
@@ -131,7 +131,11 @@ for scan in activity_array:
     if scan[1] == "slew":  # In both modes, the tag seems to coincide with the "slew" mode. Which makes sense. The raster ones had it slightly ahead, while the track ones had it slightly behind the "slew" activity, which seems a bit weird to me. I'm keeping it slightly ahead because that makes the most sense.
         label_array.append((activity_samples[0] - np.random.uniform(0, 0.2), mode))
         if np.random.uniform(0, 2) >= 1.0:
-            target_array.append((activity_samples[0], "Dummy target %d"%(target_number), "nominal"))
+            target_array.append((scan[0], "Dummy%d, radec, %d:%d:%.1f, %d:%d:%.1f, (4000 7000 1)" % \
+                                    (target_number,
+                                     np.random.randint(0, 23), np.random.randint(0, 59), np.random.uniform(0, 60),
+                                     np.random.randint(-90, 90), np.random.randint(0, 59), np.random.uniform(0, 60) ),
+                                     "nominal"))
             target_number += 1
 
 activity_dset = np.array(activity_array, dtype=[('timestamp', '<f8'), ('value', 'S13'), ('status', 'S7')])

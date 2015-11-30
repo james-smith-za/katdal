@@ -747,7 +747,7 @@ class DataSet(object):
                                         for inpA, inpB in self.subarrays[self.subarray].corr_products]
             elif k == 'pol':
                 polAB = v.lower()
-                polAB = polAB * 2 if polAB in ('h', 'v') else polAB
+                polAB = polAB * 2 if polAB in ('h', 'v', 'l', 'r') else polAB
                 self._corrprod_keep &= [(inpA[-1] == polAB[0] and inpB[-1] == polAB[1])
                                         for inpA, inpB in self.subarrays[self.subarray].corr_products]
 
