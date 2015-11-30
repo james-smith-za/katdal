@@ -261,7 +261,6 @@ else:
 
 formats = [H5DataV3, H5DataV2_5, H5DataV2, H5DataV1]
 
-
 def _file_action(action, filename, *args, **kwargs):
     """Perform action on data file using the appropriate format class.
 
@@ -324,7 +323,7 @@ def open(filename, ref_ant='', time_offset=0.0, **kwargs):
         dataset = _file_action('__call__', f, ref_ant, time_offset, **kwargs)
         datasets.append(dataset)
     return datasets[0] if isinstance(filename, basestring) else \
-        ConcatenatedDataSet(datasets)
+           ConcatenatedDataSet(datasets)
 
 
 def get_ants(filename):
