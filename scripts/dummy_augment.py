@@ -3,18 +3,20 @@ import sys
 import numpy as np
 import time
 
-h5file = h5py.File(sys.argv[1], "r+")
+filename = sys.argv[1]
+
+h5file = h5py.File(filename, "r+")
 
 mode = sys.argv[2]
 if not (mode == "raster" or mode == "track"):
     raise ValueError("%s not an appropriate augmentation mode. Expected raster or track."%(mode))
 
-h5file.attrs["version"] = "5.0"
+h5file.attrs["version"] = "2.5"
 h5file.attrs["augment_ts"] = time.time()
 
 h5file.create_group("Markup")
 
-h5file.create_group("MetaData")
+# h5file.create_group("MetaData")
 h5file["MetaData"].create_group("Configuration")
 h5file["MetaData/Configuration"].create_group("Observation")
 obsAttrs = {"ants": "ant1",
@@ -35,8 +37,10 @@ for obsAttr in obsAttrs.iteritems():
 h5file["MetaData/Configuration"].create_group("Correlator")
 # TODO: Find out about this. What should they be named to work properly?
 corrAttrs = {
-    "bls_ordering": [["ant1l", "ant1l"], ["ant1r", "ant1r"], ["ant1l", "ant1r"], ["ant1l", "ant1r"]],
-    "input_map": "placeholder"
+    "bls_ordering": [["ant1l", "ant1l"], ["ant1r", "ant1r"]],
+    "stokes_ordering": ["stokes_q", "stokes_u"],
+    "input_map": "placeholder",
+    "sideband": "-1"
 }
 for corrAttr in corrAttrs.iteritems():
     h5file["MetaData/Configuration/Correlator"].attrs[corrAttr[0]] = corrAttr[1]
@@ -54,36 +58,36 @@ h5file["MetaData/Configuration/Antennas/ant1"].attrs["delay_model"]    = "0"
 h5file["MetaData/Configuration/Antennas/ant1"].attrs["pointing_model"] = "0"
 h5file["MetaData/Configuration/Antennas/ant1"].attrs["beamwidth"]      = "0.1"
 
-h5file["MetaData"].create_group("Sensors")
+# h5file["MetaData"].create_group("Sensors")
 
 # Centre frequency stuff
 start_time = h5file["Data/Timestamps"][0]
 end_time   = h5file["Data/Timestamps"][-1]
 # print "Times: %f, %f, difference: %f"%(start_time, end_time, end_time - start_time)
-n_cent_freq_samples      = int((end_time - 2 - start_time) / 10)  # Minus two somewhat arbitrarily, so that we don't get something coinciding with the last sample.
+n_cent_freq_samples      = int((end_time - 2 - start_time) / 1)  # Minus two somewhat arbitrarily, so that we don't get something coinciding with the last sample.
 cent_freq_samples        = np.arange(n_cent_freq_samples, dtype=np.float64)
 cent_freq_sample_spacing = (end_time - start_time) / n_cent_freq_samples
 cent_freq_samples       *= cent_freq_sample_spacing
 cent_freq_samples       += start_time
 cent_freq_samples       += np.random.randn(len(cent_freq_samples))  # Because a bit of randomness is a bit more fun. To see what katdal does with it.
 # This line is important, the dtype is important in building the h5py dataset properly.
-cf_dataset = np.array([(timestamp, float(200e6), "nominal") for timestamp in cent_freq_samples], dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+cf_dataset = np.array([(timestamp, float(600e6), "nominal") for timestamp in cent_freq_samples], dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
 h5file["MetaData/Sensors"].create_group("RFE")
 h5file["MetaData/Sensors/RFE"].create_dataset("center-frequency-hz", data=cf_dataset)
 
 h5file["MetaData/Configuration/Correlator"].create_dataset("n_chans", shape=(1, 1), dtype=np.int32)
-h5file["MetaData/Configuration/Correlator/n_chans"][0] = h5file["Data/SingleDishData"].shape[1]
+h5file["MetaData/Configuration/Correlator/n_chans"][0] = h5file["Data/VisData"].shape[1]
 
 h5file["MetaData/Configuration/Correlator"].create_dataset("bandwidth", shape=(1, 1), dtype=np.float64)
-if h5file["Data/SingleDishData"].shape[1] == 1024:
+if h5file["Data/VisData"].shape[1] == 1024:
     h5file["MetaData/Configuration/Correlator/bandwidth"][0] = 400.0e6
-elif h5file["Data/SingleDishData"].shape[1] == 4096:
+elif h5file["Data/VisData"].shape[1] == 4096:
     h5file["MetaData/Configuration/Correlator/bandwidth"][0] = 1562500.0
 else:
     raise AttributeError("There's something wrong here. The number of channels seems wrong: %d, expected either 1024 or 4096.")
 
 # Activity stuff - slew and track.
-n_activity_samples = int((end_time - 2 - start_time) / 20)
+n_activity_samples = int((end_time - start_time) / 1)
 if mode == "raster":
     # Raster scans need to be a multiple of 5: slew, track, scan ready, scan, scan complete, repeat.
     n_activity_samples -= n_activity_samples % 5
@@ -139,8 +143,8 @@ for scan in activity_array:
             target_number += 1
 
 activity_dset = np.array(activity_array, dtype=[('timestamp', '<f8'), ('value', 'S13'), ('status', 'S7')])
-h5file["MetaData/Sensors"].create_group("Antennas")
-h5file["MetaData/Sensors/Antennas"].create_group("ant1")
+# h5file["MetaData/Sensors"].create_group("Antennas")
+# h5file["MetaData/Sensors/Antennas"].create_group("ant1")
 h5file["MetaData/Sensors/Antennas/ant1"].create_dataset("activity", data=activity_dset)
 labels_dset = np.array(label_array, dtype=[('timestamp', '<f8'), ('label', "S7")])
 h5file["Markup"].create_dataset("labels", data=labels_dset)
@@ -150,7 +154,6 @@ h5file["MetaData/Sensors/Antennas/ant1/target"].attrs["description"] = "Current 
 h5file["MetaData/Sensors/Antennas/ant1/target"].attrs["name"] = "target"
 h5file["MetaData/Sensors/Antennas/ant1/target"].attrs["type"] = "string"
 h5file["MetaData/Sensors/Antennas/ant1/target"].attrs["units"] = ""
-
 
 # Now is where the fun starts...
 h5file.create_group("History")
@@ -166,5 +169,41 @@ def iterate_through_object(h5object, level=0):
 
 
 # iterate_through_object(h5file)
+
+h5file.close()
+
+# This is a bit of a hack. But then this whole script is as well, so it's justified I guess...
+import katdal
+kdfile = katdal.open(filename)
+
+target_list = kdfile.catalogue.targets
+covered_timestamps = 0
+az_array = []
+el_array = []
+
+for target in target_list:
+    kdfile.select(targets=target)
+    print target
+    for i in range(len(kdfile.timestamps)):
+        azel = kdfile.catalogue.targets[kdfile.target_indices[0]].azel(kdfile.timestamps[i])
+        az_array.append(azel[0][0] / np.pi * 180.0)
+        el_array.append(azel[1][0] / np.pi * 180.0)
+
+del kdfile
+
+h5file = h5py.File(filename, "r+")
+
+# This is just filling in the time series, with zero data. Hopefully katdal will be able to write the data later?
+timestamp_array = np.array(h5file["Data/Timestamps"])
+az_dset = []
+el_dset = []
+for i in range(len(timestamp_array)):
+    az_dset.append((timestamp_array[i], az_array[i], "nominal"))
+    el_dset.append((timestamp_array[i], el_array[i], "nominal"))
+
+az_dset = np.array(az_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+el_dset = np.array(el_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+h5file["MetaData/Sensors/Antennas/ant1"].create_dataset("pos.azim", data=az_dset)
+h5file["MetaData/Sensors/Antennas/ant1"].create_dataset("pos.elev", data=el_dset)
 
 h5file.close()
