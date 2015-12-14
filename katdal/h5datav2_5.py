@@ -172,15 +172,17 @@ class H5DataV2_5(DataSet):
         # ------ Extract timestamps ------
         self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
         # Obtain visibility data and timestamps
-        self._vis        = data_group['VisData']
-        self._stokes     = data_group['StokesData']
-        self._timestamps = data_group['Timestamps']
-        num_dumps        = len(self._timestamps)
-        if num_dumps != self._vis.shape[0]:
+        self._vis         = data_group['VisData']
+        self._stokes      = data_group['StokesData']
+        self._timestamps  = data_group['Timestamps']
+        self._time_av_ll = data_group["Left Power time average"]
+        self._time_av_rr = data_group["Right Power time average"]
+        self._time_av_q  = data_group["Stokes Q time average"]
+        self._time_av_u  = data_group["Stokes U time average"]
+        num_dumps         = len(self._timestamps)
+        if num_dumps     != self._vis.shape[0] - 1:  # This is where a blank row always seems to come through... TODO: Warn Craig about this.
             raise BrokenFile('Number of timestamps received '
                         '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
-        # Discard the last sample - empty row
-        num_dumps -= 1
         # Do quick test for uniform spacing of timestamps (necessary but not sufficient)
         expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period + 1
         # The expected_dumps should always be an integer (like num_dumps), unless the timestamps and/or dump period
@@ -462,12 +464,43 @@ class H5DataV2_5(DataSet):
 
     @property
     def stokes(self):
-        """Single-dish observational data, 32-bit signed integer, LL, RR, Q, U.
+        """Single-dish observational data, 32-bit signed integer, Stokes Q and U. Same
+        (*T*, *F*, *B*) arrangement as the vis data.
         """
         def _extract_stokes(stokes, keep):
-            return stokes.astype(np.float64)[slice(None)]
+            keep = keep[:3] + (slice(None),) * (3 - len(keep))
+            force_3dim = tuple([(np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep])
+            return stokes.astype(np.float64)[force_3dim]
         extract_stokes = LazyTransform('extract_stokes', _extract_stokes, lambda shape: shape, np.float64)
         return LazyIndexer(self._stokes, transforms=[extract_stokes])
+
+    @property
+    def time_av_ll(self):
+        def _extract_time_av_ll(ll, keep):
+            return ll.astype(np.float64)
+        extract_time_av_ll = LazyTransform('extract_time_av_ll', _extract_time_av_ll, lambda shape: shape, np.float64)
+        return LazyIndexer(self._time_av_ll, transforms=[extract_time_av_ll])
+
+    @property
+    def time_av_rr(self):
+        def _extract_time_av_rr(rr, keep):
+            return rr.astype(np.float64)
+        extract_time_av_rr = LazyTransform('extract_time_av_rr', _extract_time_av_rr, lambda shape: shape, np.float64)
+        return LazyIndexer(self._time_av_rr, transforms=[extract_time_av_rr])
+
+    @property
+    def time_av_q(self):
+        def _extract_time_av_q(q, keep):
+            return q.astype(np.float64)
+        extract_time_av_q = LazyTransform('extract_time_av_q', _extract_time_av_q, lambda shape: shape, np.float64)
+        return LazyIndexer(self._time_av_q, transforms=[extract_time_av_q])
+
+    @property
+    def time_av_u(self):
+        def _extract_time_av_u(u, keep):
+            return u.astype(np.float64)
+        extract_time_av_u = LazyTransform('extract_time_av_u', _extract_time_av_u, lambda shape: shape, np.float64)
+        return LazyIndexer(self._time_av_u, transforms=[extract_time_av_u])
 
     @property
     def u(self):
