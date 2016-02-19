@@ -9,7 +9,7 @@ import katpoint
 from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow, \
                      DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target
 from .sensordata import SensorData, SensorCache
-from .categorical import CategoricalData, sensor_to_categorical
+from .categorical import CategoricalData
 from .lazy_indexer import LazyIndexer, LazyTransform
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ SIMPLIFY_STATE = {'scan_ready': 'slew', 'scan': 'scan', 'scan_complete': 'scan',
 SENSOR_PROPS = dict(DEFAULT_SENSOR_PROPS)
 SENSOR_PROPS.update({
     '*activity': {'greedy_values': ('slew', 'stop'), 'initial_value': 'slew',
-                   'transform': lambda act: SIMPLIFY_STATE.get(act, 'stop')},
+                  'transform': lambda act: SIMPLIFY_STATE.get(act, 'stop')},
     '*target': {'initial_value': '', 'transform': _robust_target},
     '*ap_indexer_position': {'initial_value': ''},
     '*_serial_number': {'initial_value': 0}
@@ -50,9 +50,9 @@ WEIGHT_DESCRIPTIONS = ('visibility precision (inverse variance, i.e. 1 / sigma^2
 # Number of bits in ADC sample counter, used to timestamp correlator data in original SPEAD stream
 ADC_COUNTER_BITS = 48
 
-#--------------------------------------------------------------------------------------------------
-#--- Utility functions
-#--------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+# --- Utility functions
+# -------------------------------------------------------------------------------------------------
 
 def dummy_dataset(name, shape, dtype, value):
     """Dummy HDF5 dataset containing a single value.
@@ -81,11 +81,12 @@ def dummy_dataset(name, shape, dtype, value):
     # Without this randomness katdal can only open one file requiring a dummy dataset
     random_string = ''.join(['%02x' % (x,) for x in np.random.randint(256, size=8)])
     dummy_file = h5py.File('%s_%s.h5' % (name, random_string), driver='core', backing_store=False)
-    return dummy_file.create_dataset(name, shape=shape, maxshape=shape, dtype=dtype, fillvalue=value, compression='gzip')
+    return dummy_file.create_dataset(name, shape=shape, maxshape=shape,
+                                     dtype=dtype, fillvalue=value, compression='gzip')
 
-#--------------------------------------------------------------------------------------------------
-#--- CLASS :  H5DataV3
-#--------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+# -- CLASS :  H5DataV3
+# -------------------------------------------------------------------------------------------------
 
 class H5DataV3(DataSet):
     """Load HDF5 format version 3 file produced by RTS correlator.
@@ -157,7 +158,7 @@ class H5DataV3(DataSet):
                 comp_type = tm_group[comp_name].attrs.get('class')
                 # Mapping from specific components to generic sensor groups
                 # Put antenna sensors in virtual Antenna group, the rest according to component type
-                group_lookup = {'AntennaPositioner' : 'Antennas/' + comp_name}
+                group_lookup = {'AntennaPositioner': 'Antennas/' + comp_name}
                 group_name = group_lookup.get(comp_type, comp_type) if comp_type else comp_name
                 name = '/'.join((group_name, sensor_name))
                 cache[name] = SensorData(obj, name)
@@ -167,7 +168,10 @@ class H5DataV3(DataSet):
 
         if cbf_group.attrs.keys() == ['class']:
             raise BrokenFile('File contains no correlator metadata')
+        # Get SDP L0 dump period if available, else fall back to CBF dump period
         self.dump_period = cbf_group.attrs['int_time']
+        if 'sdp' in tm_group:
+            self.dump_period = tm_group['sdp'].attrs.get('l0_int_time', self.dump_period)
         # Obtain visibilities and timestamps (load the latter explicitly, but obviously not the former...)
         if 'correlator_data' in data_group:
             self._vis = data_group['correlator_data']
@@ -184,17 +188,17 @@ class H5DataV3(DataSet):
         time_origin = old_origin if time_origin is None else time_origin
         # Work around wraps in ADC sample counter
         adc_wrap_period = 2 ** ADC_COUNTER_BITS / time_scale
-        # Get second opinion of the observation start time from periodic sensors
-        periodic_sensors = ('air_temperature', 'air_relative_humidity', 'air_pressure',
-                            'pos_actual_scan_azim', 'pos_actual_scan_elev')
+        # Get second opinion of the observation start time from regular sensors
+        regular_sensors = ('air_temperature', 'air_relative_humidity', 'air_pressure',
+                           'pos_actual_scan_azim', 'pos_actual_scan_elev', 'script_log')
         data_duration = self._timestamps[-1] + self.dump_period - self._timestamps[0]
         sensor_start_time = 0.0
-        # Pick first periodic sensor with data record of similar duration as data
+        # Pick first regular sensor with longer data record than data (hopefully straddling it)
         for sensor_name, sensor_data in cache.iteritems():
-            if sensor_name.endswith(periodic_sensors):
+            if sensor_name.endswith(regular_sensors) and len(sensor_data):
                 proposed_sensor_start_time = sensor_data[0]['timestamp']
                 sensor_duration = sensor_data[-1]['timestamp'] - proposed_sensor_start_time
-                if abs(data_duration - sensor_duration) < 10.:
+                if sensor_duration > data_duration:
                     sensor_start_time = proposed_sensor_start_time
                     break
         # If CBF sync time was too long ago, move it forward in steps of wrap period
@@ -210,14 +214,20 @@ class H5DataV3(DataSet):
         self._timestamps = samples / time_scale + time_origin
         # Now remove any time wraps within the observation
         time_deltas = np.diff(self._timestamps)
-        # Assume that any decrease in timestamp is due to wrapping of ADC sample counter
-        time_wraps = np.nonzero(time_deltas < 0.0)[0]
+        # Assume that a large decrease in timestamp is due to wrapping of ADC sample counter
+        time_wraps = np.nonzero(time_deltas < -adc_wrap_period / 2.)[0]
         if time_wraps:
             time_deltas[time_wraps] += adc_wrap_period
             self._timestamps = np.cumsum(np.r_[self._timestamps[0], time_deltas])
             for wrap in time_wraps:
-                logger.warning('Time wrap found and corrected at: %s UTC' % (katpoint.Timestamp(self._timestamps[wrap])))
+                logger.warning('Time wrap found and corrected at: %s UTC' %
+                               (katpoint.Timestamp(self._timestamps[wrap])))
             logger.warning("THE DATA MAY BE CORRUPTED with e.g. delay tracking errors - proceed at own risk!")
+        # Warn if there are any remaining decreases in timestamps not associated with wraps
+        backward_jumps = np.nonzero(time_deltas < 0.0)[0]
+        for jump in backward_jumps:
+            logger.warning('CBF timestamps going backward at: %s UTC (%g seconds)' %
+                           (katpoint.Timestamp(self._timestamps[jump]), time_deltas[jump]))
 
         # Check dimensions of timestamps vs those of visibility data
         num_dumps = len(self._timestamps)
@@ -265,11 +275,15 @@ class H5DataV3(DataSet):
         # ------ Extract observation parameters ------
 
         self.obs_params = {}
-        # Replay obs_params sensor and update obs_params dict accordingly
-        obs_params = self.sensor.get('Observation/params', extract=False)['value']
+        # Replay obs_params sensor if available and update obs_params dict accordingly
+        try:
+            obs_params = self.sensor.get('Observation/params', extract=False)['value']
+        except KeyError:
+            obs_params = []
         for obs_param in obs_params:
-            key, val = obs_param.split(' ', 1)
-            self.obs_params[key] = np.lib.utils.safe_eval(val)
+            if obs_param:
+                key, val = obs_param.split(' ', 1)
+                self.obs_params[key] = np.lib.utils.safe_eval(val)
         # Get observation script parameters, with defaults
         self.observer = self.obs_params.get('observer', '')
         self.description = self.obs_params.get('description', '')
@@ -283,9 +297,12 @@ class H5DataV3(DataSet):
             if tm_group[name].attrs.get('class') != 'AntennaPositioner':
                 continue
             try:
-                ant_description = tm_group[name].attrs['observer']
+                ant_description = self.sensor['Antennas/%s/observer' % (name,)][0]
             except KeyError:
-                ant_description = tm_group[name].attrs['description']
+                try:
+                    ant_description = tm_group[name].attrs['observer']
+                except KeyError:
+                    ant_description = tm_group[name].attrs['description']
             ants.append(katpoint.Antenna(ant_description))
         cam_ants = set(ant.name for ant in ants)
         # Original list of correlation products as pairs of input labels
@@ -341,7 +358,7 @@ class H5DataV3(DataSet):
         product = self.obs_params.get('product', 'unknown')
 
         # We only expect a single spectral window within a single v3 file,
-        # as changing the centre freq is like changing the CBF mode 
+        # as changing the centre freq is like changing the CBF mode
         self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, product, sideband=1)]
         self.sensor['Observation/spw'] = CategoricalData(self.spectral_windows, [0, num_dumps])
         self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
@@ -357,7 +374,10 @@ class H5DataV3(DataSet):
             scan.events, scan.indices = scan.events[1:], scan.indices[1:]
             scan.events[0] = 0
         # Use labels to partition the data set into compound scans
-        label = self.sensor.get('Observation/label')
+        try:
+            label = self.sensor.get('Observation/label')
+        except KeyError:
+            label = CategoricalData([''], [0, num_dumps])
         # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
         # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
         if len(label.unique_values) > 1:
@@ -392,8 +412,6 @@ class H5DataV3(DataSet):
         # Ensure that each target flux model spans all frequencies in data set if possible
         self._fix_flux_freq_range()
 
-        # Avoid storing reference to self in transform closure below, as this hinders garbage collection
-        dump_period, time_offset = self.dump_period, self.time_offset
         # Apply default selection and initialise all members that depend on selection in the process
         self.select(spw=0, subarray=0, ants=obs_ants)
 
@@ -425,15 +443,37 @@ class H5DataV3(DataSet):
         f, version = H5DataV3._open(filename)
         obs_params = {}
         tm_group = f['TelescopeModel']
-        all_ants = [ant for ant in tm_group if tm_group[ant].attrs.get('class') == 'AntennaPositioner']
+        # Pick first group with appropriate class as CBF
+        cbfs = [comp for comp in tm_group
+                if tm_group[comp].attrs.get('class') == 'CorrelatorBeamformer']
+        cbf_group = tm_group[cbfs[0]]
+        ants = []
+        for name in tm_group:
+            if tm_group[name].attrs.get('class') != 'AntennaPositioner':
+                continue
+            try:
+                ant_description = tm_group[name]['observer']['value'][0]
+            except KeyError:
+                try:
+                    ant_description = tm_group[name].attrs['observer']
+                except KeyError:
+                    ant_description = tm_group[name].attrs['description']
+            ants.append(katpoint.Antenna(ant_description))
+        cam_ants = set(ant.name for ant in ants)
+        # Original list of correlation products as pairs of input labels
+        corrprods = cbf_group.attrs['bls_ordering']
+        # Find names of all antennas with associated correlator data
+        cbf_ants = set([cp[0][:-1] for cp in corrprods] + [cp[1][:-1] for cp in corrprods])
+        # By default, only pick antennas that were in use by the script
         tm_params = tm_group['obs/params']
         for obs_param in tm_params['value']:
-            key, val = obs_param.split(' ', 1)
-            obs_params[key] = np.lib.utils.safe_eval(val)
+            if obs_param:
+                key, val = obs_param.split(' ', 1)
+                obs_params[key] = np.lib.utils.safe_eval(val)
         obs_ants = obs_params.get('ants')
-        # By default, only pick antennas that were in use by the script
-        obs_ants = obs_ants.split(',') if obs_ants else all_ants
-        return [katpoint.Antenna(tm_group[ant].attrs['description']) for ant in obs_ants if ant in all_ants]
+        # Otherwise fall back to the list of antennas common to CAM and CBF
+        obs_ants = obs_ants.split(',') if obs_ants else list(cam_ants & cbf_ants)
+        return [ant for ant in ants if ant.name in obs_ants]
 
     @staticmethod
     def _get_targets(filename):

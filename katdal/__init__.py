@@ -206,6 +206,7 @@ from .h5datav2_5 import H5DataV2_5
 from .h5datav3 import H5DataV3
 from .sensordata import _sensor_completer
 
+
 # Clean up top-level namespace a bit
 _dataset, _concatdata, _sensordata = dataset, concatdata, sensordata
 _h5datav1, _h5datav2, _h5datav2_5, _h5datav3 = h5datav1, h5datav2, h5datav2_5, h5datav3
@@ -239,27 +240,23 @@ _no_config_handler.addFilter(_NoConfigFilter())
 logger = _logging.getLogger(__name__)
 logger.addHandler(_no_config_handler)
 
-# Attempt to determine installed package version
+# BEGIN VERSION CHECK
+# Get package version when locally imported from repo or via -e develop install
 try:
-    import pkg_resources as _pkg_resources
+    import katversion as _katversion
 except ImportError:
-    __version__ = "unknown"
+    import time as _time
+    __version__ = "0.0+unknown.%s" % (_time.strftime('%Y%m%d%H%M'),)
 else:
-    try:
-        dist = _pkg_resources.get_distribution("katdal")
-        # ver needs to be a list since tuples in Python <= 2.5 don't have
-        # a .index method.
-        ver = list(dist.parsed_version)
-        __version__ = "r%d" % int(ver[ver.index("*r") + 1])
-        del dist, ver
-    except (_pkg_resources.DistributionNotFound, ValueError, IndexError, TypeError):
-        __version__ = "unknown"
+    __version__ = _katversion.get_version(__path__[0])
+# END VERSION CHECK
 
-#------------------------------------------------------------------------------
-#--- Top-level functions passed on to the appropriate format handler
-#------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -- Top-level functions passed on to the appropriate format handler
+# -----------------------------------------------------------------------------
 
 formats = [H5DataV3, H5DataV2_5, H5DataV2, H5DataV1]
+
 
 def _file_action(action, filename, *args, **kwargs):
     """Perform action on data file using the appropriate format class.
