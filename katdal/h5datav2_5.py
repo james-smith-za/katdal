@@ -170,7 +170,7 @@ class H5DataV2_5(DataSet):
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
-        self.dump_period = get_single_value(config_group['Correlator'], 'int_time')
+        self.dump_period = get_single_value(config_group['Observation'], 'int_time') # Integration time in milliseconds.
         # Obtain visibility data and timestamps
         self._vis         = data_group['VisData']
         self._stokes      = data_group['StokesData']

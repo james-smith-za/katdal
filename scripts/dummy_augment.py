@@ -1,3 +1,8 @@
+# This file contains the sort of bare minimum data necessary to go from a "blank"
+# dataset just grabbed off the UDP, to a fully-functional file that KatDAL can
+# use. It may be worthwhile going over each item and making sure that the C++
+# version can handle it.
+
 import h5py
 import sys
 import numpy as np
