@@ -170,7 +170,7 @@ class H5DataV2_5(DataSet):
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
-        self.dump_period = get_single_value(config_group['Observation'], 'int_time') # Integration time in milliseconds.
+        self.dump_period = get_single_value(config_group['DataFile'], 'int_time') # Integration time in milliseconds.
         # Obtain visibility data and timestamps
         self._vis         = data_group['VisData']
         self._stokes      = data_group['StokesData']
@@ -180,11 +180,11 @@ class H5DataV2_5(DataSet):
         self._time_av_q  = data_group["Stokes Q time average"]
         self._time_av_u  = data_group["Stokes U time average"]
         num_dumps         = len(self._timestamps)
-        if num_dumps     != self._vis.shape[0] - 1:  # This is where a blank row always seems to come through... TODO: Warn Craig about this.
+        if num_dumps     != self._vis.shape[0] - 1:
             raise BrokenFile('Number of timestamps received '
                         '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
         # Do quick test for uniform spacing of timestamps (necessary but not sufficient)
-        expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period + 1
+        expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period[0] + 1
         # The expected_dumps should always be an integer (like num_dumps), unless the timestamps and/or dump period
         # are messed up in the file, so the threshold of this test is a bit arbitrary (e.g. could use > 0.5)
         irregular = abs(expected_dumps - num_dumps) >= 0.01
@@ -206,7 +206,7 @@ class H5DataV2_5(DataSet):
         # Move timestamps from start of each dump to the middle of the dump
         data_timestamps += 0.5 * self.dump_period + self.time_offset
         if data_timestamps[0] < 1e9:
-            logger.warning("File '%s' has invalid first correlator timestamp (%f)" % (filename, data_timestamps[0],))
+            logger.warning("File '%s' has invalid first timestamp (%f)" % (filename, data_timestamps[0],))
         self._time_keep = np.ones(num_dumps, dtype=np.bool)
         self.start_time = katpoint.Timestamp(data_timestamps[0] - 0.5 * self.dump_period)
         self.end_time = katpoint.Timestamp(data_timestamps[-1] + 0.5 * self.dump_period)
@@ -234,10 +234,10 @@ class H5DataV2_5(DataSet):
 
         # ------ Extract subarrays ------
         # By default, only pick antennas that were in use by the script
-        script_ants = config_group['Observation'].attrs['ants'].split(',')
+        script_ants = str(config_group['Observation'].attrs['ants']).split(',')
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
-        single_dish_prods = get_single_value(config_group['Correlator'], 'bls_ordering')
+        single_dish_prods = get_single_value(config_group['DataFile'], 'vis_ordering')
         if len(single_dish_prods) != self._vis.shape[2]:
             raise BrokenFile('Number of data labels (containing expected antenna names) '
                              'received from h5 file (%d) differs from number of baselines in data (%d)' %
@@ -264,13 +264,13 @@ class H5DataV2_5(DataSet):
 
         # ------ Extract spectral windows / frequencies ------
         centre_freq = self.sensor.get('RFE/center-frequency-hz')
-        num_chans = get_single_value(config_group['Correlator'], 'n_chans')
+        num_chans = get_single_value(config_group['DataFile'], 'n_chans')
         if num_chans != self._vis.shape[1]:
-            raise BrokenFile('Number of channels received from correlator '
+            raise BrokenFile('Number of channels received from DBE '
                              '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
-        bandwidth = get_single_value(config_group['Correlator'], 'bandwidth')
+        bandwidth = get_single_value(config_group['DataFile'], 'bandwidth')
         channel_width = bandwidth / num_chans
-        sideband = int(config_group["Correlator"].attrs["sideband"])
+        sideband = int(config_group["DataFile"].attrs["sideband"])
         # try:
         #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]  # TODO: Determine what our DBE modes are going to be.
         # except KeyError, IndexError:
