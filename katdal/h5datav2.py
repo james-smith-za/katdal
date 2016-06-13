@@ -161,6 +161,8 @@ class H5DataV2(DataSet):
         self.observer = self.obs_params.get('observer', '')
         self.description = self.obs_params.get('description', '')
         self.experiment_id = self.obs_params.get('experiment_id', '')
+        # Get script log from History group
+        self.obs_script_log = f['History/script_log'].value['log'].tolist()
 
         # ------ Extract timestamps ------
 
@@ -521,11 +523,12 @@ class H5DataV2(DataSet):
             Only then will data be loaded into memory.
 
         """
-        names = names.split(',') if isinstance(names, basestring) else FLAG_NAMES if names is None else names
+        known_flags = [row[0] for row in self._flags_description]
+
+        names = names.split(',') if isinstance(names, basestring) else known_flags if names is None else names
 
         # Create index list for desired flags
         flagmask = np.zeros(8, dtype=np.int)
-        known_flags = [row[0] for row in self._flags_description]
         for name in names:
             try:
                 flagmask[known_flags.index(name)] = 1

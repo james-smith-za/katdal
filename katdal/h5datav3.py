@@ -23,7 +23,9 @@ SENSOR_PROPS.update({
                   'transform': lambda act: SIMPLIFY_STATE.get(act, 'stop')},
     '*target': {'initial_value': '', 'transform': _robust_target},
     '*ap_indexer_position': {'initial_value': ''},
-    '*_serial_number': {'initial_value': 0}
+    '*_serial_number': {'initial_value': 0},
+    '*dig_noise_diode': {'categorical': True, 'greedy_values': (True,),
+                         'initial_value': 0.0, 'transform': lambda x: x > 0.0},
 })
 
 SENSOR_ALIASES = {
@@ -40,10 +42,10 @@ def _calc_azel(cache, name, ant):
 VIRTUAL_SENSORS = dict(DEFAULT_VIRTUAL_SENSORS)
 VIRTUAL_SENSORS.update({'Antennas/{ant}/az': _calc_azel, 'Antennas/{ant}/el': _calc_azel})
 
-FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'detected_rfi', 'predicted_rfi', 'reserved6', 'reserved7')
+FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'ingest_rfi', 'predicted_rfi', 'cal_rfi', 'reserved7')
 FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag based on live CAM information',
-                     'reserved - bit 3', 'RFI detected in the online system', 'RFI predicted from space based pollutants',
-                     'reserved - bit 6', 'reserved - bit 7')
+                     'reserved - bit 3', 'RFI detected in ingest', 'RFI predicted from space based pollutants',
+                     'RFI detected in calibration', 'reserved - bit 7')
 WEIGHT_NAMES = ('precision',)
 WEIGHT_DESCRIPTIONS = ('visibility precision (inverse variance, i.e. 1 / sigma^2)',)
 
@@ -112,6 +114,8 @@ class H5DataV3(DataSet):
         Rotate baseline label list to work around early RTS correlator bug
     centre_freq : float or None, optional
         Override centre frequency if provided, in Hz
+    band : string or None, optional
+        Override receiver band if provided (e.g. 'l') - used to find ND models
     squeeze : {False, True}, optional
         Don't force vis / weights / flags to be 3-dimensional
     kwargs : dict, optional
@@ -133,7 +137,7 @@ class H5DataV3(DataSet):
     """
     def __init__(self, filename, ref_ant='', time_offset=0.0, mode='r',
                  time_scale=None, time_origin=None, rotate_bls=False,
-                 centre_freq=None, squeeze=False, **kwargs):
+                 centre_freq=None, band=None, squeeze=False, **kwargs):
         DataSet.__init__(self, filename, ref_ant, time_offset)
 
         # Load file
@@ -169,9 +173,20 @@ class H5DataV3(DataSet):
         if cbf_group.attrs.keys() == ['class']:
             raise BrokenFile('File contains no correlator metadata')
         # Get SDP L0 dump period if available, else fall back to CBF dump period
-        self.dump_period = cbf_group.attrs['int_time']
+        self.dump_period = cbf_dump_period = cbf_group.attrs['int_time']
         if 'sdp' in tm_group:
             self.dump_period = tm_group['sdp'].attrs.get('l0_int_time', self.dump_period)
+        # Determine if timestamps are already aligned with middle of dumps
+        try:
+            ts_ref = data_group['timestamps'].attrs['timestamp_reference']
+            assert ts_ref == 'centroid', "Don't know timestamp reference %r" % (ts_ref,)
+            offset_to_middle_of_dump = 0.0
+        except KeyError:
+            # Two possible cases:
+            #   - RTS: SDP dump = CBF dump, timestamps at start of each dump
+            #   - Early AR1 (before Oct 2015): SDP dump = mean of starts of CBF dumps
+            # Fortunately, both result in the same offset of 1/2 a CBF dump
+            offset_to_middle_of_dump = 0.5 * cbf_dump_period
         # Obtain visibilities and timestamps (load the latter explicitly, but obviously not the former...)
         if 'correlator_data' in data_group:
             self._vis = data_group['correlator_data']
@@ -245,8 +260,8 @@ class H5DataV3(DataSet):
             logger.warning(("Irregular timestamps detected in file '%s': "
                            "expected %.3f dumps based on dump period and start/end times, got %d instead") %
                            (filename, expected_dumps, num_dumps))
-        # Move timestamps from start of each dump to the middle of the dump
-        self._timestamps += 0.5 * self.dump_period + self.time_offset
+        # Ensure timestamps are aligned with the middle of each dump
+        self._timestamps += offset_to_middle_of_dump + self.time_offset
         if self._timestamps[0] < 1e9:
             logger.warning("File '%s' has invalid first correlator timestamp (%f)" % (filename, self._timestamps[0],))
         self._time_keep = np.ones(num_dumps, dtype=np.bool)
@@ -272,7 +287,7 @@ class H5DataV3(DataSet):
                         dummy_dataset('dummy_weights', shape=self._vis.shape[:-1] + (1,), dtype=np.float32, value=1.0)
         self._weights_description = np.array(zip(WEIGHT_NAMES, WEIGHT_DESCRIPTIONS))
 
-        # ------ Extract observation parameters ------
+        # ------ Extract observation parameters and script log ------
 
         self.obs_params = {}
         # Replay obs_params sensor if available and update obs_params dict accordingly
@@ -288,6 +303,11 @@ class H5DataV3(DataSet):
         self.observer = self.obs_params.get('observer', '')
         self.description = self.obs_params.get('description', '')
         self.experiment_id = self.obs_params.get('experiment_id', '')
+        # Extract script log data verbatim (it is not a standard sensor anyway)
+        try:
+            self.obs_script_log = self.sensor.get('Observation/script_log', extract=False)['value'].tolist()
+        except KeyError:
+            self.obs_script_log = []
 
         # ------ Extract subarrays ------
 
@@ -304,6 +324,8 @@ class H5DataV3(DataSet):
                 except KeyError:
                     ant_description = tm_group[name].attrs['description']
             ants.append(katpoint.Antenna(ant_description))
+        # Keep the basic list sorted as far as possible
+        ants = sorted(ants)
         cam_ants = set(ant.name for ant in ants)
         # Original list of correlation products as pairs of input labels
         corrprods = cbf_group.attrs['bls_ordering']
@@ -315,9 +337,11 @@ class H5DataV3(DataSet):
         obs_ants = obs_ants.split(',') if obs_ants else list(cam_ants & cbf_ants)
         self.ref_ant = obs_ants[0] if not ref_ant else ref_ant
         # Populate antenna -> receiver mapping
+        band_override = band
         for ant in cam_ants:
-            band_sensor = 'Antennas/%s/ap_indexer_position' % (ant,)
-            band = self.sensor[band_sensor][0] if band_sensor in self.sensor else ''
+            if band_override is None:
+                band_sensor = 'Antennas/%s/ap_indexer_position' % (ant,)
+                band = self.sensor[band_sensor][0] if band_sensor in self.sensor else ''
             rx_sensor = 'Antennas/%s/rsc_rx%s_serial_number' % (ant, band)
             rx_serial = self.sensor[rx_sensor][0] if rx_sensor in self.sensor else 0
             if band:
@@ -353,6 +377,10 @@ class H5DataV3(DataSet):
             raise BrokenFile('Number of channels received from correlator '
                              '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
         bandwidth = cbf_group.attrs['bandwidth']
+        # Work around a bc856M4k CBF bug active from 2016-04-28 to 2016-06-01 that got the bandwidth wrong
+        if bandwidth == 857152196.0:
+            logger.warning('Worked around CBF bandwidth bug (857.152 MHz -> 856.000 MHz)')
+            bandwidth = 856000000.0
         channel_width = bandwidth / num_chans
         # The data product is set by the script or passed to it via schedule block
         product = self.obs_params.get('product', 'unknown')
@@ -644,11 +672,13 @@ class H5DataV3(DataSet):
             Only then will data be loaded into memory.
 
         """
-        names = names.split(',') if isinstance(names, basestring) else FLAG_NAMES if names is None else names
+
+        known_flags = [row[0] for row in self._flags_description]
+
+        names = names.split(',') if isinstance(names, basestring) else known_flags if names is None else names
 
         # Create index list for desired flags
         flagmask = np.zeros(8, dtype=np.int)
-        known_flags = [row[0] for row in self._flags_description]
         for name in names:
             try:
                 flagmask[known_flags.index(name)] = 1
