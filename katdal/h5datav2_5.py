@@ -1,5 +1,7 @@
 """Data accessor class for HDF5 files produced by AVN DBE."""
 
+# TODO: For some reason, I need to use "h5.select()" before I "print h5" - the problem is with self.corr_products - though I can't find out where they're supposed to be assigned exactly. I'll work it out eventually but for now the workaround is simply to use "h5.select()" first.
+
 import logging
 
 import numpy as np
@@ -44,7 +46,7 @@ def _calc_azel(cache, name, ant):
     # is actually used to return the az/el values for the katdal object.
     # real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
     real_sensor = 'Antennas/%s/%s' % (ant, 'pos.azim' if name.endswith('az') else 'pos.elev')
-    print cache.get(real_sensor)
+    #print cache.get(real_sensor)
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
@@ -170,21 +172,25 @@ class H5DataV2_5(DataSet):
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
-        self.dump_period = get_single_value(config_group['DataFile'], 'int_time') # Integration time in milliseconds.
+        accumulation_length = get_single_value(config_group['DBE'], 'accum_length') # Accumulation length in number of FPGA frames.
+        # TODO This is very much a shortcut. I'm going to need more info on sampling frequency, FFT sizes, etc. in order to be able
+        # to properly determine the dump period.
+        conversion_factor = 0.008 / 3125
+        self.dump_period  = accumulation_length * conversion_factor
         # Obtain visibility data and timestamps
         self._vis         = data_group['VisData']
         self._stokes      = data_group['StokesData']
         self._timestamps  = data_group['Timestamps']
-        self._time_av_ll = data_group["Left Power time average"]
-        self._time_av_rr = data_group["Right Power time average"]
-        self._time_av_q  = data_group["Stokes Q time average"]
-        self._time_av_u  = data_group["Stokes U time average"]
+        self._time_av_ll  = data_group["Left Power time average"]
+        self._time_av_rr  = data_group["Right Power time average"]
+        self._time_av_q   = data_group["Stokes Q time average"]
+        self._time_av_u   = data_group["Stokes U time average"]
         num_dumps         = len(self._timestamps)
-        if num_dumps     != self._vis.shape[0] - 1:
+        if num_dumps != self._vis.shape[0] - 1:
             raise BrokenFile('Number of timestamps received '
                         '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
         # Do quick test for uniform spacing of timestamps (necessary but not sufficient)
-        expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period[0] + 1
+        expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period + 1
         # The expected_dumps should always be an integer (like num_dumps), unless the timestamps and/or dump period
         # are messed up in the file, so the threshold of this test is a bit arbitrary (e.g. could use > 0.5)
         irregular = abs(expected_dumps - num_dumps) >= 0.01
@@ -237,56 +243,100 @@ class H5DataV2_5(DataSet):
         script_ants = str(config_group['Observation'].attrs['ants']).split(',')
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
-        single_dish_prods = get_single_value(config_group['DataFile'], 'vis_ordering')
-        if len(single_dish_prods) != self._vis.shape[2]:
+        corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',')
+        if len(corrprods) != self._vis.shape[2]:
             raise BrokenFile('Number of data labels (containing expected antenna names) '
-                             'received from h5 file (%d) differs from number of baselines in data (%d)' %
-                             (len(single_dish_prods), self._vis.shape[2]))
+                             'received from h5 file (%d) differs from number of power products in data (%d)' %
+                             (len(corrprods), self._vis.shape[2]))
+
+        stokes_prods      = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
+        if len(stokes_prods) != self._stokes.shape[2]:
+            raise BrokenFile('Number of data labels (containing expected antenna names) '
+                             'received from h5 file (%d) differs from number of Stokes products in data (%d)' %
+                             (len(stokes_prods), self._stokes.shape[2]))
         # All antennas in configuration as katpoint Antenna objects
+
+        #TODO: This is perhaps not the best place for these functions. In the beginning perhaps?
+        def decimal2dms(decimal_degrees):
+            if decimal_degrees == 0:
+                return "0"
+            elif isinstance(decimal_degrees, int):
+                return str(decimal_degrees)
+            else:
+                degrees = int(decimal_degrees - (decimal_degrees % 1))
+                decimal_minutes = (decimal_degrees - degrees)*60.0
+                minutes = int(decimal_minutes - (decimal_minutes % 1))
+                decimal_seconds = (decimal_minutes - minutes) * 60.0
+                return "%d:%d:%.2f"%(degrees, minutes, decimal_seconds)
+
+        def make_string(param_list):
+            if not isinstance(param_list, h5py.Dataset):
+                raise ValueError("Error! param_list isn't an HDF5 dataset.")
+            model_string = ""
+            for param in param_list:
+                model_string += decimal2dms(param) + " "
+            model_string = model_string[:-1] # To take off the space on the end.
+            return model_string
+
         ants = []
+        # TODO This is hard-coded for the Ghana dish. Fix! At the moment, the acquisition server hasn't been updated to read them properly. Something is funky with the way that the antennas are printed though, at the moment they kind of aren't.
         for antenna in config_group["Antennas"]:
-            name           = config_group["Antennas"][antenna].attrs['name']
-            latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            diameter       = config_group["Antennas"][antenna].attrs['diameter']
-            delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
-            pointing_model = config_group["Antennas"][antenna].attrs['pointing_model']
-            beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
+            #name           = config_group["Antennas"][antenna].attrs['name']
+            name            = "ant1"
+            #latitude       = config_group["Antennas"][antenna].attrs['latitude']
+            latitude        = 5.7515983
+            #longitude      = config_group["Antennas"][antenna].attrs['longitude']
+            longitude       = -0.3056904
+            #altitude       = config_group["Antennas"][antenna].attrs['altitude']
+            altitude        = 10
+            #diameter       = config_group["Antennas"][antenna].attrs['diameter']
+            diameter        = 32
+            #delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
+            delay_model     = None
+            pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            #beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
+            beamwidth       = 0.1
 
-            ants.append(katpoint.Antenna(name, latitude, longitude, diameter, delay_model, pointing_model, beamwidth))
+            ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
-        self.subarrays = [Subarray(ants, single_dish_prods)]
+        self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
         self.sensor['Observation/subarray_index'] = CategoricalData([0], [0, len(data_timestamps)])
+
         # Store antenna objects in sensor cache too, for use in virtual sensor calculations
         for ant in ants:
             self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
 
         # ------ Extract spectral windows / frequencies ------
-        centre_freq = self.sensor.get('RFE/center-frequency-hz')
-        num_chans = get_single_value(config_group['DataFile'], 'n_chans')
-        if num_chans != self._vis.shape[1]:
-            raise BrokenFile('Number of channels received from DBE '
-                             '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
-        bandwidth = get_single_value(config_group['DataFile'], 'bandwidth')
+        # TODO: fix hardcoding
+        #centre_freq = self.sensor.get('RFE/center-frequency-hz')
+        centre_freq = 4.981e9
+        #num_chans = get_single_value(config_group['DataFile'], 'n_chans')
+        num_chans = 1024
+        #if num_chans != self._vis.shape[1]:
+        #    raise BrokenFile('Number of channels received from DBE '
+        #                     '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
+        #bandwidth = get_single_value(config_group['DataFile'], 'bandwidth')
+        bandwidth = 400e6
         channel_width = bandwidth / num_chans
-        sideband = int(config_group["DataFile"].attrs["sideband"])
+
+        # Our RF into the ROACH will always be spectrally inverted, but since we're sampling
+        # in the 2nd Nyquist zone, it'll be inverting again.
+        # So I think our "sideband" value should be 1.
+        sideband = 1
+
         # try:
         #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]  # TODO: Determine what our DBE modes are going to be.
         # except KeyError, IndexError:
         #     # Guess the mode for version 2.0 files that haven't been re-augmented
         #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
 
-        # I added "sideband" here because KAT-7's stuff is always in a lower sideband and therefore spectrally inverted.
-        # Ours is not necessarily.
-        # self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
-        #                          for spw_centre in centre_freq.unique_values]
-        self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, sideband=sideband)
-                                 for spw_centre in centre_freq.unique_values]
+        # TODO: figure out how to make a proper amount of these. Somehow need to generate from the sensor data which might not necessarily line up. May need to refer quite extensively to the Kat7 ones, line 286 or so.
+        self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, sideband=sideband)]
 
-        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
-                                                         centre_freq.events)
-        self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
+        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
+        self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
+
 
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
@@ -327,6 +377,7 @@ class H5DataV2_5(DataSet):
         self.sensor['Observation/target_index'] = CategoricalData(target.indices, target.events)
         # Set up catalogue containing all targets in file, with reference antenna as default antenna
         self.catalogue.add(target.unique_values)
+
         self.catalogue.antenna = self.sensor['Antennas/%s/antenna' % (self.ref_ant,)][0]
         # Ensure that each target flux model spans all frequencies in data set if possible
         self._fix_flux_freq_range()
@@ -356,7 +407,7 @@ class H5DataV2_5(DataSet):
     def _get_ants(filename):
         """Quick look function to get the list of antennas in a data file.
 
-        This is intended to be called without createing a full katdal object.
+        This is intended to be called without creating a full katdal object.
 
         Parameters
         ----------
@@ -407,14 +458,15 @@ class H5DataV2_5(DataSet):
         """Verbose human-friendly string representation of data set."""
         descr = [super(H5DataV2_5, self).__str__()]
         # append the process_log, if it exists, for non-concatenated h5 files
-        if 'process_log' in self.file['History']:
-            descr.append('-------------------------------------------------------------------------------')
-            descr.append('Process log:')
-            for proc in self.file['History']['process_log']:
-                param_list = '%15s:' % proc[0]
-                for param in proc[1].split(','):
-                    param_list += '  %s' % param
-                descr.append(param_list)
+        # TODO: commented out. Our file format doesn't have a "History" (yet?).
+        #if 'process_log' in self.file['History']:
+        #    descr.append('-------------------------------------------------------------------------------')
+        #    descr.append('Process log:')
+        #    for proc in self.file['History']['process_log']:
+        #        param_list = '%15s:' % proc[0]
+        #        for param in proc[1].split(','):
+        #            param_list += '  %s' % param
+        #        descr.append(param_list)
         return '\n'.join(descr)
 
     @property
