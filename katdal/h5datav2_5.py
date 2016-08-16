@@ -2,6 +2,24 @@
 
 # TODO: For some reason, I need to use "h5.select()" before I "print h5" - the problem is with self.corr_products - though I can't find out where they're supposed to be assigned exactly. I'll work it out eventually but for now the workaround is simply to use "h5.select()" first.
 
+# TODO: Antenna list seems to be empty for some reason.
+
+# TODO: az, el, ra and dec don't work yet.
+
+# TODO: flags. Currently raises NotImplementedError
+
+# TODO: Obs script log currently returns empty.
+
+# TODO: parangle
+
+# TODO: receivers comes up blank.
+
+# TODO: scans() also produces no useful results right now.
+
+# TODO: weights NotImplementedError. Should it be?
+
+
+
 import logging
 
 import numpy as np
@@ -241,6 +259,7 @@ class H5DataV2_5(DataSet):
         # ------ Extract subarrays ------
         # By default, only pick antennas that were in use by the script
         script_ants = str(config_group['Observation'].attrs['ants']).split(',')
+
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
         corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',')
@@ -298,6 +317,8 @@ class H5DataV2_5(DataSet):
             beamwidth       = 0.1
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
+
+        print ants
 
         self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
