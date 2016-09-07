@@ -267,6 +267,9 @@ class H5DataV2_5(DataSet):
             raise BrokenFile('Number of data labels (containing expected antenna names) '
                              'received from h5 file (%d) differs from number of power products in data (%d)' %
                              (len(corrprods), self._vis.shape[2]))
+        # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
+        corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
+                     ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
 
         stokes_prods      = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
@@ -507,7 +510,7 @@ class H5DataV2_5(DataSet):
 
     @property
     def vis(self):
-        """Single-dish observational data, 32-bit signed integer, LL, RR, Q, U.
+        """Single-dish observational data, 32-bit signed integer, LL, RR.
 
         This is not strictly speaking visibility data, as AVN DBE produces
         single-dish data, but the name was used to preserve consistency with
