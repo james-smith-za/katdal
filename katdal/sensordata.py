@@ -2,6 +2,7 @@
 
 import logging
 import re
+import cPickle as pickle
 
 import numpy as np
 import katpoint
@@ -79,16 +80,79 @@ class SensorData(object):
         return "<katdal.%s '%s' len=%d type='%s' at 0x%x>" % \
                (self.__class__.__name__, self.name, len(self), self.dtype, id(self))
 
+
+def _telstate_unpack(s):
+    """This unpacks a telstate value from its string representation."""
+    try:
+        # Since 2016-05-09 the HDF5 TelescopeState contains pickled values
+        return pickle.loads(s)
+    except (pickle.UnpicklingError, ValueError, EOFError):
+        try:
+            # Before 2016-05-09 the telstate values were str() representations
+            # This cannot be unpacked in general but works for numbers at least
+            return np.safe_eval(s)
+        except (ValueError, SyntaxError):
+            # When unsure, return the string itself (correct for string sensors)
+            return s
+
+
+class TelstateSensorData(SensorData):
+    """Raw (uncached) sensor data in TelescopeState record array form.
+
+    This wraps the telstate sensors stored in recent HDF5 files. It differs
+    in two ways from the normal HDF5 sensors: no 'status' column and values
+    stored as pickles.
+
+    TODO: This is a temporary fix to get at missing sensors in telstate and
+    should be replaced by a proper wrapping of any telstate object.
+
+    Parameters
+    ----------
+    data : recarray-like, with fields ('timestamp', 'value')
+        Uncached sensor data as record array or equivalent (such as a
+        :class:`h5py.Dataset`)
+    name : string or None, optional
+        Sensor name (assumed to be data.name by default, if it exists)
+
+    Attributes
+    ----------
+    dtype : :class:`numpy.dtype` object
+        Type of sensor data, as a NumPy dtype
+
+    """
+    def __init__(self, data, name=None):
+        super(TelstateSensorData, self).__init__(data, name)
+        # Unpickle first value to derive dtype (should be simple for sensors)
+        self.dtype = np.array([_telstate_unpack(data['value'][0])]).dtype
+
+    def __getitem__(self, key):
+        """Extract timestamp, value and status of each sensor data point."""
+        if key == 'value':
+            # Unpickle sensor data upon request
+            return np.array([_telstate_unpack(s) for s in self.data[key]])
+        elif key == 'status':
+            # Fake the missing status column
+            return np.repeat('nominal', len(self))
+        else:
+            # WARNING: if key is an index or slice, values will still be pickled
+            # It is safer to extract data explicitly into recarray in __init__
+            return np.asarray(self.data[key])
+
 # -------------------------------------------------------------------------------------------------
 # -- Utility functions
 # -------------------------------------------------------------------------------------------------
 
-def _linear_interp(xi, yi, x):
-    """Linearly interpolate (or extrapolate) (xi, yi) values to x positions.
+def _safe_linear_interp(xi, yi, x):
+    """Linearly interpolate (xi, yi) values to x positions, safely.
 
     Given a set of N ``(x, y)`` points, provided in the *xi* and *yi* arrays,
     this will calculate ``y``-coordinate values for a set of M ``x``-coordinates
-    provided in the *x* array, using linear interpolation and extrapolation.
+    provided in the *x* array, using linear interpolation.
+
+    It is safe in the sense that if *xi* and *yi* only contain a single point
+    it will revert to zeroth-order interpolation. In addition, data will not
+    be extrapolated linearly past the edges of *xi*, but the closest value
+    will be used instead (i.e. also zeroth-order interpolation).
 
     Parameters
     ----------
@@ -107,21 +171,27 @@ def _linear_interp(xi, yi, x):
 
     Notes
     -----
-    This is lifted from scikits.fitting.poly as it is the only part of the
-    package that is typically required. This weens katdal off SciPy too.
+    This is mostly lifted from scikits.fitting.poly as it is the only part of
+    the package that is typically required. This weens katdal off SciPy too.
 
     """
+    # Do zeroth-order interpolation for a single fixed (x, y) coordinate
+    if len(xi) == 1:
+        # The simplest way to handle x of e.g. 3, np.array(3) and [1, 2, 3]
+        return yi[0] * np.ones_like(x)
     # Find lowest xi value >= x (end of segment containing x)
     end = np.atleast_1d(xi.searchsorted(x))
     # Associate any x found outside xi range with closest segment (first or last one)
-    # This linearly extrapolates the first and last segment to -inf and +inf, respectively
     end[end == 0] += 1
     end[end == len(xi)] -= 1
     start = end - 1
-    # Ensure that output y has same shape as input x (especially, let scalar input result in scalar output)
+    # Ensure that output y has same shape as input x
+    # (especially, let scalar input result in scalar output)
     start, end = np.reshape(start, np.shape(x)), np.reshape(end, np.shape(x))
     # Set up weight such that xi[start] => 0 and xi[end] => 1
     end_weight = (x - xi[start]) / (xi[end] - xi[start])
+    # Do zeroth-order interpolation beyond the range of xi
+    end_weight = np.clip(end_weight, 0.0, 1.0)
     return (1.0 - end_weight) * yi[start] + end_weight * yi[end]
 
 
@@ -458,9 +528,41 @@ class SensorCache(dict):
                     if interp_degree != 1:
                         logger.warning('Requested sensor interpolation with polynomial degree ' + str(interp_degree) +
                                        ' but scikits.fitting not installed - falling back to linear interpolation')
-                    sensor_data = _linear_interp(sensor_timestamps, sensor_data['value'], self.timestamps)
+                    sensor_data = _safe_linear_interp(sensor_timestamps, sensor_data['value'], self.timestamps)
             self[name] = sensor_data
         return sensor_data[self.keep] if select else sensor_data
+
+    def get_with_fallback(self, sensor_type, names):
+        """Sensor values interpolated to correlator data timestamps.
+
+        Get data for a type of sensor that may have one of several names.
+        Try each name in turn until something works, or crash sensibly.
+
+        Parameters
+        ----------
+        sensor_type : string
+            Name of sensor class / type, used for informational purposes only
+        names : sequence of strings
+            Sensor names to try until one of them provides data
+
+        Returns
+        -------
+        sensor_data : array
+           Interpolated sensor data as 1-D array, one value per selected timestamp
+
+        Raises
+        ------
+        KeyError
+            If none of the sensor names were found in the cache
+
+        """
+        for name in names:
+            try:
+                return self.get(name, select=True)
+            except KeyError:
+                logger.debug('Could not find %s sensor with name %r, trying next option' % (sensor_type, name))
+        raise KeyError('Could not find any %s sensor, tried %s' % (sensor_type, names))
+
 
 # -------------------------------------------------------------------------------------------------
 # -- FUNCTION :  _sensor_completer

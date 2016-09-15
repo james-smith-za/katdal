@@ -8,7 +8,7 @@ import katpoint
 
 from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow, \
                      DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target
-from .sensordata import SensorData, SensorCache
+from .sensordata import SensorData, SensorCache, TelstateSensorData
 from .categorical import CategoricalData
 from .lazy_indexer import LazyIndexer, LazyTransform
 
@@ -42,9 +42,9 @@ def _calc_azel(cache, name, ant):
 VIRTUAL_SENSORS = dict(DEFAULT_VIRTUAL_SENSORS)
 VIRTUAL_SENSORS.update({'Antennas/{ant}/az': _calc_azel, 'Antennas/{ant}/el': _calc_azel})
 
-FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'ingest_rfi', 'predicted_rfi', 'cal_rfi', 'reserved7')
+FLAG_NAMES = ('reserved0', 'static', 'cam', 'data_lost', 'ingest_rfi', 'predicted_rfi', 'cal_rfi', 'reserved7')
 FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag based on live CAM information',
-                     'reserved - bit 3', 'RFI detected in ingest', 'RFI predicted from space based pollutants',
+                     'no data was received', 'RFI detected in ingest', 'RFI predicted from space based pollutants',
                      'RFI detected in calibration', 'reserved - bit 7')
 WEIGHT_NAMES = ('precision',)
 WEIGHT_DESCRIPTIONS = ('visibility precision (inverse variance, i.e. 1 / sigma^2)',)
@@ -167,6 +167,16 @@ class H5DataV3(DataSet):
                 name = '/'.join((group_name, sensor_name))
                 cache[name] = SensorData(obj, name)
         tm_group.visititems(register_sensor)
+        # Also load sensors from TelescopeState for what it's worth
+        if 'TelescopeState' in f.file:
+            def register_telstate_sensor(name, obj):
+                """A sensor is defined as a non-empty dataset with expected dtype."""
+                # Before 2016-05-09 the dtype was ('value', 'timestamp')
+                if isinstance(obj, h5py.Dataset) and obj.shape != () and \
+                   set(obj.dtype.names) == {'timestamp', 'value'}:
+                    name = 'TelescopeState/' + name
+                    cache[name] = TelstateSensorData(obj, name)
+            f.file['TelescopeState'].visititems(register_telstate_sensor)
 
         # ------ Extract vis and timestamps ------
 
@@ -672,8 +682,8 @@ class H5DataV3(DataSet):
             Only then will data be loaded into memory.
 
         """
-
-        known_flags = [row[0] for row in self._flags_description]
+        # Reverse flag indices as np.packbits has bit 0 as the MSB (we want LSB)
+        known_flags = [row[0] for row in reversed(self._flags_description)]
 
         names = names.split(',') if isinstance(names, basestring) else known_flags if names is None else names
 
@@ -695,3 +705,33 @@ class H5DataV3(DataSet):
                                 lambda flags, keep: np.bool_(np.bitwise_and(flagmask, flags)),
                                 dtype=np.bool)
         return self._vislike_indexer(self._flags, extract)
+
+    @property
+    def temperature(self):
+        """Air temperature in degrees Celsius."""
+        names = ['Enviro/air_temperature', 'TelescopeState/anc_weather_temperature']
+        return self.sensor.get_with_fallback('temperature', names)
+
+    @property
+    def pressure(self):
+        """Barometric pressure in millibars."""
+        names = ['Enviro/air_pressure', 'TelescopeState/anc_weather_pressure']
+        return self.sensor.get_with_fallback('pressure', names)
+
+    @property
+    def humidity(self):
+        """Relative humidity as a percentage."""
+        names = ['Enviro/air_relative_humidity', 'TelescopeState/anc_weather_humidity']
+        return self.sensor.get_with_fallback('humidity', names)
+
+    @property
+    def wind_speed(self):
+        """Wind speed in metres per second."""
+        names = ['Enviro/mean_wind_speed', 'Enviro/wind_speed', 'TelescopeState/anc_weather_wind_speed']
+        return self.sensor.get_with_fallback('wind_speed', names)
+
+    @property
+    def wind_direction(self):
+        """Wind direction as an azimuth angle in degrees."""
+        names = ['Enviro/wind_direction', 'TelescopeState/anc_weather_wind_direction']
+        return self.sensor.get_with_fallback('wind_direction', names)
