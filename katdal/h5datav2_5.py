@@ -56,15 +56,9 @@ SENSOR_ALIASES = {
     'nd_roach': 'roach.noise.diode.on',
 }
 
-
-def _calc_azel(cache, name, ant):
+def _calc_azel(cache, name, ant="ant1"):
     """Calculate virtual (az, el) sensors from actual ones in sensor cache."""
-    # TODO: This is where the name of the az/el thingies will need to be updated. We may not use the exact same naming convention.
-    # Kat-7 stores 6 different AZ/EL values based on requested and actual and pointing models applied, only the final one
-    # is actually used to return the az/el values for the katdal object.
-    # real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
-    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.azim' if name.endswith('az') else 'pos.elev')
-    #print cache.get(real_sensor)
+    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
@@ -192,9 +186,13 @@ class H5DataV2_5(DataSet):
         # ------ Extract timestamps ------
         accumulation_length = get_single_value(config_group['DBE'], 'accum_length') # Accumulation length in number of FPGA frames.
         # TODO This is very much a shortcut. I'm going to need more info on sampling frequency, FFT sizes, etc. in order to be able
-        # to properly determine the dump period.
-        conversion_factor = 0.008 / 3125
+        # to properly determine the dump period
+        # Conversion factor for WB spectrometer:
+        # conversion_factor = 0.008 / 3125
+        # And for the narrowband spectrometer:
+        conversion_factor = (1.0/800e6) * 512 * 4096
         self.dump_period  = accumulation_length * conversion_factor
+
         # Obtain visibility data and timestamps
         self._vis         = data_group['VisData']
         self._stokes      = data_group['StokesData']
@@ -207,6 +205,7 @@ class H5DataV2_5(DataSet):
         if num_dumps != self._vis.shape[0] - 1:
             raise BrokenFile('Number of timestamps received '
                         '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
+
         # Do quick test for uniform spacing of timestamps (necessary but not sufficient)
         expected_dumps = (self._timestamps[num_dumps - 1] - self._timestamps[0]) / self.dump_period + 1
         # The expected_dumps should always be an integer (like num_dumps), unless the timestamps and/or dump period
@@ -219,6 +218,7 @@ class H5DataV2_5(DataSet):
                            (filename, expected_dumps, num_dumps))
             if quicklook:
                 logger.warning("Quicklook option selected - partitioning data based on synthesised timestamps instead")
+
         if not irregular or quicklook:
             # Estimate timestamps by assuming they are uniformly spaced (much quicker than loading them from file).
             # This is useful for the purpose of segmenting data set, where accurate timestamps are not that crucial.
@@ -229,6 +229,7 @@ class H5DataV2_5(DataSet):
             data_timestamps = self._timestamps[:num_dumps]
         # Move timestamps from start of each dump to the middle of the dump
         data_timestamps += 0.5 * self.dump_period + self.time_offset
+
         if data_timestamps[0] < 1e9:
             logger.warning("File '%s' has invalid first timestamp (%f)" % (filename, data_timestamps[0],))
         self._time_keep = np.ones(num_dumps, dtype=np.bool)
@@ -262,7 +263,7 @@ class H5DataV2_5(DataSet):
 
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
-        corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',')
+        corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',') # ant1lant1l,ant1rant1r
         if len(corrprods) != self._vis.shape[2]:
             raise BrokenFile('Number of data labels (containing expected antenna names) '
                              'received from h5 file (%d) differs from number of power products in data (%d)' %
@@ -320,8 +321,6 @@ class H5DataV2_5(DataSet):
             beamwidth       = 0.1
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
-
-        print ants
 
         self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
