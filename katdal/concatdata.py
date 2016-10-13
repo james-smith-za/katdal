@@ -1,3 +1,19 @@
+################################################################################
+# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+#
+# Licensed under the BSD 3-Clause License (the "License"); you may not use
+# this file except in compliance with the License. You may obtain a copy
+# of the License at
+#
+#   https://opensource.org/licenses/BSD-3-Clause
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
 """Class for concatenating visibility data sets."""
 
 import os.path
@@ -18,6 +34,7 @@ class ConcatenationError(Exception):
 # -------------------------------------------------------------------------------------------------
 # -- CLASS :  ConcatenatedLazyIndexer
 # -------------------------------------------------------------------------------------------------
+
 
 class ConcatenatedLazyIndexer(LazyIndexer):
     """Two-stage deferred indexer that concatenates multiple indexers.
@@ -119,7 +136,7 @@ class ConcatenatedLazyIndexer(LazyIndexer):
             # Step through indexers that overlap with slice (it's guaranteed that some will overlap)
             for ind in range(find_indexer(start), find_indexer(stop) + 1):
                 chunk_start = start - indexer_starts[ind] \
-                              if start >= indexer_starts[ind] else ((start - indexer_starts[ind]) % stride)
+                    if start >= indexer_starts[ind] else ((start - indexer_starts[ind]) % stride)
                 chunk_stop = stop - indexer_starts[ind]
                 # The final .reshape is needed to upgrade any scalar or singleton chunks to full dimension
                 chunks.append(self.indexers[ind][tuple([slice(chunk_start, chunk_stop, stride)] +
@@ -182,6 +199,7 @@ class ConcatenatedLazyIndexer(LazyIndexer):
 # -- CLASS :  ConcatenatedSensorData
 # -------------------------------------------------------------------------------------------------
 
+
 class ConcatenatedSensorData(SensorData):
     """The concatenation of multiple raw (uncached) sensor data sets.
 
@@ -230,6 +248,7 @@ def _calc_dummy(cache, name):
 # -------------------------------------------------------------------------------------------------
 # -- CLASS :  ConcatenatedSensorCache
 # -------------------------------------------------------------------------------------------------
+
 
 class ConcatenatedSensorCache(SensorCache):
     """Sensor cache that is a concatenation of multiple underlying caches.
@@ -370,6 +389,7 @@ class ConcatenatedSensorCache(SensorCache):
 # -- CLASS :  ConcatenatedDataSet
 # -------------------------------------------------------------------------------------------------
 
+
 class ConcatenatedDataSet(DataSet):
     """Class that concatenates existing visibility data sets.
 
@@ -452,13 +472,15 @@ class ConcatenatedDataSet(DataSet):
         # Apply default selection and initialise all members that depend on selection in the process
         self.select(spw=0, subarray=0)
 
-    def _set_keep(self, time_keep=None, freq_keep=None, corrprod_keep=None):
+    def _set_keep(self, time_keep=None, freq_keep=None, corrprod_keep=None,
+                  weights_keep=None, flags_keep=None):
         """Set time, frequency and/or correlation product selection masks.
 
         Set the selection masks for those parameters that are present. The time
         mask is split into chunks and applied to the underlying datasets and
         sensor caches, while the frequency and corrprod masks are directly
-        applied to the underlying datasets as well.
+        applied to the underlying datasets as well. Also allow for weights
+        and flags selections.
 
         Parameters
         ----------
@@ -468,6 +490,10 @@ class ConcatenatedDataSet(DataSet):
             Boolean selection mask with one entry per frequency channel
         corrprod_keep : array of bool, shape (*B*,), optional
             Boolean selection mask with one entry per correlation product
+        weights_keep : 'all' or string or sequence of strings, optional
+            Names of selected weight types (or 'all' for the lot)
+        flags_keep : 'all' or string or sequence of strings, optional
+            Names of selected flag types (or 'all' for the lot)
 
         """
         if time_keep is not None:
@@ -485,6 +511,14 @@ class ConcatenatedDataSet(DataSet):
             self._corrprod_keep = corrprod_keep
             for n, d in enumerate(self.datasets):
                 d._set_keep(corrprod_keep=self._corrprod_keep)
+        if weights_keep is not None:
+            self._weights_keep = weights_keep
+            for n, d in enumerate(self.datasets):
+                d._set_keep(weights_keep=self._weights_keep)
+        if flags_keep is not None:
+            self._flags_keep = flags_keep
+            for n, d in enumerate(self.datasets):
+                d._set_keep(flags_keep=self._flags_keep)
 
     @property
     def timestamps(self):
@@ -515,44 +549,61 @@ class ConcatenatedDataSet(DataSet):
         """
         return ConcatenatedLazyIndexer([d.vis for d in self.datasets])
 
-    def weights(self, names=None):
+    @property
+    def weights(self):
         """Visibility weights as a function of time, frequency and baseline.
 
-        Parameters
-        ----------
-        names : None or string or sequence of strings, optional
-            List of names of weights to be multiplied together, as a sequence
-            or string of comma-separated names (combine all weights by default)
-
-        Returns
-        -------
-        weights : :class:`LazyIndexer` object of float32, shape (*T*, *F*, *B*)
-            Array indexer with time along the first dimension, frequency along
-            the second dimension and correlation product ("baseline") index
-            along the third dimension. To get the data array itself from the
-            indexer `x`, do `x[:]` or perform any other form of indexing on it.
-            Only then will data be loaded into memory.
+        The weights data are returned as an array indexer of float32, shape
+        (*T*, *F*, *B*), with time along the first dimension, frequency along the
+        second dimension and correlation product ("baseline") index along the
+        third dimension. The number of integrations *T* matches the length of
+        :meth:`timestamps`, the number of frequency channels *F* matches the
+        length of :meth:`freqs` and the number of correlation products *B*
+        matches the length of :meth:`corr_products`. To get the data array
+        itself from the indexer `x`, do `x[:]` or perform any other form of
+        indexing on it. Only then will data be loaded into memory.
 
         """
-        return ConcatenatedLazyIndexer([d.weights(names) for d in self.datasets])
+        return ConcatenatedLazyIndexer([d.weights for d in self.datasets])
 
-    def flags(self, names=None):
-        """Visibility flags as a function of time, frequency and baseline.
+    @property
+    def flags(self):
+        """Flags as a function of time, frequency and baseline.
 
-        Parameters
-        ----------
-        names : None or string or sequence of strings, optional
-            List of names of flags that will be OR'ed together, as a sequence or
-            a string of comma-separated names (use all flags by default)
-
-        Returns
-        -------
-        flags : :class:`LazyIndexer` object of bool, shape (*T*, *F*, *B*)
-            Array indexer with time along the first dimension, frequency along
-            the second dimension and correlation product ("baseline") index
-            along the third dimension. To get the data array itself from the
-            indexer `x`, do `x[:]` or perform any other form of indexing on it.
-            Only then will data be loaded into memory.
+        The flags data are returned as an array indexer of bool, shape
+        (*T*, *F*, *B*), with time along the first dimension, frequency along the
+        second dimension and correlation product ("baseline") index along the
+        third dimension. The number of integrations *T* matches the length of
+        :meth:`timestamps`, the number of frequency channels *F* matches the
+        length of :meth:`freqs` and the number of correlation products *B*
+        matches the length of :meth:`corr_products`. To get the data array
+        itself from the indexer `x`, do `x[:]` or perform any other form of
+        indexing on it. Only then will data be loaded into memory.
 
         """
-        return ConcatenatedLazyIndexer([d.flags(names) for d in self.datasets])
+        return ConcatenatedLazyIndexer([d.flags for d in self.datasets])
+
+    @property
+    def temperature(self):
+        """Air temperature in degrees Celsius."""
+        return np.concatenate([d.temperature for d in self.datasets])
+
+    @property
+    def pressure(self):
+        """Barometric pressure in millibars."""
+        return np.concatenate([d.pressure for d in self.datasets])
+
+    @property
+    def humidity(self):
+        """Relative humidity as a percentage."""
+        return np.concatenate([d.humidity for d in self.datasets])
+
+    @property
+    def wind_speed(self):
+        """Wind speed in metres per second."""
+        return np.concatenate([d.wind_speed for d in self.datasets])
+
+    @property
+    def wind_direction(self):
+        """Wind direction as an azimuth angle in degrees."""
+        return np.concatenate([d.wind_direction for d in self.datasets])
