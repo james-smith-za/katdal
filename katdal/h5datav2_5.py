@@ -58,7 +58,11 @@ SENSOR_ALIASES = {
 
 def _calc_azel(cache, name, ant="ant1"):
     """Calculate virtual (az, el) sensors from actual ones in sensor cache."""
-    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
+    # TODO: This version assumes the augmented datafiles, which haven't had a pointing model applied to them yet,
+    #       i.e. the only data that they've got to work with is the -pointm- datasets which are the ones delivered
+    #       to the ASCS, not the -scan- datasets from the KAT-7 convention. We don't have those yet.
+    #real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
+    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-pointm-azim' if name.endswith('az') else 'pos.actual-pointm-elev')
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
@@ -360,7 +364,6 @@ class H5DataV2_5(DataSet):
         self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
         self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
 
-
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
         scan = self.sensor.get('Antennas/%s/activity' % (self.ref_ant,))
@@ -447,7 +450,9 @@ class H5DataV2_5(DataSet):
         all_ants = [ant for ant in config_group['Antennas']]
         script_ants = config_group['Observation'].attrs.get('script_ants')
         script_ants = script_ants.split(',') if script_ants else all_ants
-        return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
+        #return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
+        # TODO: This is hardcoded for the Ghana antenna. Just to make scape stop complaining. Do need to fix at some point.
+        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 0.1")]
 
     @staticmethod
     def _get_targets(filename):
@@ -588,6 +593,31 @@ class H5DataV2_5(DataSet):
     @property
     def w(self):
         raise NotImplementedError("File is AVN Single-dish format, uv-plane is not applicable.")
+
+    @property
+    def temperature(self):
+        """Air temperature in degrees Celsius."""
+        return self.sensor['Enviro/air.temperature']
+
+    @property
+    def pressure(self):
+        """Barometric pressure in millibars."""
+        return self.sensor['Enviro/air.pressure']
+
+    @property
+    def humidity(self):
+        """Relative humidity as a percentage."""
+        return self.sensor['Enviro/relative.humidity']
+
+    @property
+    def wind_speed(self):
+        """Wind speed in metres per second."""
+        return self.sensor['Enviro/wind.speed']
+
+    @property
+    def wind_direction(self):
+        """Wind direction as an azimuth angle in degrees."""
+        return self.sensor['Enviro/wind.direction']
 
     # TODO: Haven't implemented any flags just yet.
     # def flags(self, names=None):
