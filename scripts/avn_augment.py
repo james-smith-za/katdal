@@ -248,12 +248,12 @@ antenna_sensor_group = sensor_group["Antennas/ant1"]
 # Status message just 'nominal' for the moment. Until such time as there are some parameters where it should be otherwise.
 print "Reading position data from csv file into memory..."
 for i in range(len(timestamp_array)):
-    azim_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Azim req position"][csv_lower_index + i], "nominal"))
-    azim_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
-    azim_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Azim actual position"][csv_lower_index + i], "nominal"))
-    elev_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Elev req position"][csv_lower_index + i], "nominal"))
-    elev_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
-    elev_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i], csv_file["Elev actual position"][csv_lower_index + i], "nominal"))
+    azim_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim req position"][csv_lower_index + i], "nominal"))
+    azim_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
+    azim_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim actual position"][csv_lower_index + i], "nominal"))
+    elev_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev req position"][csv_lower_index + i], "nominal"))
+    elev_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
+    elev_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev actual position"][csv_lower_index + i], "nominal"))
 
 print "Writing requested azimuth..."
 azim_req_pos_dset = np.array(azim_req_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
@@ -265,7 +265,7 @@ antenna_sensor_group["pos.request-pointm-azim"].attrs["units"] = "degrees CW fro
 
 print "Writing desired azimuth..."
 azim_desired_pos_dset = np.array(azim_desired_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-azim", data=azim_req_pos_dset)
+antenna_sensor_group.create_dataset("pos.desired-pointm-azim", data=azim_desired_pos_dset)
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["description"] = "Intermediate azimuth position setpoint used by the ASCS."
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["name"] = "pos.desired-pointm-azim"
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["type"] = "float64"
@@ -274,7 +274,7 @@ antenna_sensor_group["pos.desired-pointm-azim"].attrs["units"] = "degrees CW fro
 # TODO: This needs to change back to 'pointm' at some point. I've fudged it into 'scan' so that scape will read it.
 print "Writing actual azimuth..."
 azim_actual_pos_dset = np.array(azim_actual_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-azim", data=azim_req_pos_dset)
+antenna_sensor_group.create_dataset("pos.actual-scan-azim", data=azim_actual_pos_dset)
 antenna_sensor_group["pos.actual-scan-azim"].attrs["description"] = "Azimuth data returned by the encoder."
 antenna_sensor_group["pos.actual-scan-azim"].attrs["name"] = "pos.actual-scan-azim"
 antenna_sensor_group["pos.actual-scan-azim"].attrs["type"] = "float64"
@@ -290,7 +290,7 @@ antenna_sensor_group["pos.request-pointm-elev"].attrs["units"] = "degrees CW fro
 
 print "Writing desired elevation..."
 elev_desired_pos_dset = np.array(elev_desired_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-elev", data=elev_req_pos_dset)
+antenna_sensor_group.create_dataset("pos.desired-pointm-elev", data=elev_desired_pos_dset)
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["description"] = "Intermediate elevation position setpoint used by the ASCS."
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["name"] = "pos.desired-pointm-elev"
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["type"] = "float64"
@@ -299,7 +299,7 @@ antenna_sensor_group["pos.desired-pointm-elev"].attrs["units"] = "degrees CW fro
 # TODO: This needs to change back to 'pointm' at some point. I've fudged it into 'scan' so that scape will read it.
 print "Writing actual elevation..."
 elev_actual_pos_dset = np.array(elev_actual_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-elev", data=elev_req_pos_dset)
+antenna_sensor_group.create_dataset("pos.actual-scan-elev", data=elev_actual_pos_dset)
 antenna_sensor_group["pos.actual-scan-elev"].attrs["description"] = "Elevation data returned by the encoder."
 antenna_sensor_group["pos.actual-scan-elev"].attrs["name"] = "pos.actual-scan-elev"
 antenna_sensor_group["pos.actual-scan-elev"].attrs["type"] = "float64"
