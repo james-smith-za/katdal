@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import datetime
 import pandas as pd
+import katpoint
 
 # Set up option parser
 from optparse import OptionParser
@@ -163,7 +164,8 @@ else:
 
 print "\nChecking if sterile datasets were created by the RoachAcquisitionServer."
 
-antenna_pos_dataset_list = ["activity",
+antenna_pos_dataset_list = ["target",
+                            "activity",
                             "pos.actual-dec",
                             "pos.actual-ra",
                             "pos.actual-scan-azim",
@@ -195,9 +197,10 @@ csv_duration_str = "%dh %dm %.2fs"%( int(csv_duration/3600), int(csv_duration - 
 print "Pos data start:\t\t%s UTC\nPos data end:\t\t%s UTC\nDuration:\t\t%s\n"%(datetime.datetime.fromtimestamp(csv_begin_time).isoformat(), datetime.datetime.fromtimestamp(csv_end_time).isoformat(), csv_duration_str)
 
 if (begin_time < csv_begin_time) or (end_time > csv_end_time):
-    print "\nError! RF data not completely covered by position data!\nExiting..."
-    h5file.close()
-    exit()
+    #print "\nError! RF data not completely covered by position data!\nExiting..."
+    #h5file.close()
+    #exit()
+    pass
 else:
     print "Overlap detected."
 
@@ -223,7 +226,7 @@ try:
     while (float(csv_file["Timestamp"][csv_upper_index]) / 1000.0) > end_time:
         csv_upper_index -= 1
         # While loop will break when it gets lower or equal to
-    csv_upper_index += 1 # Set it back to just after the RF data ends.
+    #csv_upper_index += 1 # Set it back to just after the RF data ends.
     print "\nUpper bound: %d."%(csv_upper_index)
     print "CSV upper index: %.2f\tH5file upper index: %.2f"%(csv_file["Timestamp"][csv_upper_index]/1000, end_time)
     print "Position data extens to %.2f seconds after RF data."%(np.abs(csv_file["Timestamp"][csv_upper_index] / 1000 - end_time))
@@ -235,6 +238,8 @@ except ValueError:
 timestamp_array = np.array(csv_file["Timestamp"][csv_lower_index:csv_upper_index], dtype=[("timestamp","<f8")])
 
 # Unfortunately no elegant way to do this really... as far as I can tell.
+target_dset           = []
+activity_dset         = []
 azim_req_pos_dset     = []
 azim_desired_pos_dset = []
 azim_actual_pos_dset  = []
@@ -245,15 +250,55 @@ elev_actual_pos_dset  = []
 antenna_sensor_group = sensor_group["Antennas/ant1"]
 
 # If not for the attributes required in each thing, this whole thing could just be done with a for loop and a dictionary...
-# Status message just 'nominal' for the moment. Until such time as there are some parameters where it should be otherwise.
+# Status message just 'nominal' for the moment. Until such time as there are some parameters where it should be otherwise
+antenna_str = "Kuntunse, 5:45:2.48, -0:18:17.92, 116, 32.0"
+antenna = katpoint.Antenna(antenna_str)
+activity = "slew"
+
+target = raw_input("Enter target in katpoint string format:\n(name, radec, 00:00:00.00, 00:00:00.00)\n")
+target_dset.append((csv_file["Timestamp"][csv_lower_index]/1000, target, "nominal"))
+print "Writing target data..."
+target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
+antenna_sensor_group.create_dataset("target", data=target_dset)
+antenna_sensor_group["target"].attrs["description"] = "Current target"
+antenna_sensor_group["target"].attrs["name"] = "target"
+antenna_sensor_group["target"].attrs["type"] = "string"
+antenna_sensor_group["target"].attrs["units"] = ""
+
+
+
 print "Reading position data from csv file into memory..."
-for i in range(len(timestamp_array)):
+activity_dset.append((csv_file["Timestamp"][csv_lower_index]/1000, "slew", "nominal"))
+
+
+for i in range(0, len(timestamp_array), 10): #Down-sample by 10
     azim_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim req position"][csv_lower_index + i], "nominal"))
     azim_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
     azim_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim actual position"][csv_lower_index + i], "nominal"))
     elev_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev req position"][csv_lower_index + i], "nominal"))
     elev_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
     elev_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev actual position"][csv_lower_index + i], "nominal"))
+    req_target = katpoint.construct_azel_target(csv_file["Azim req position"][csv_lower_index + i], csv_file["Elev req position"][csv_lower_index + i])
+    req_target.antenna = antenna
+    actual_target = katpoint.construct_azel_target(csv_file["Azim actual position"][csv_lower_index + i], csv_file["Elev actual position"][csv_lower_index + i])
+    actual_target.antenna = antenna
+    if activity == "slew":
+        if actual_target.separation(req_target) < 0.05:
+            activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "scan", "nominal"))
+            activity = "scan"
+    else:
+        #if activity == "scan":
+        if actual_target.separation(req_target) > 0.09:
+            activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "slew", "nominal"))
+            activity = "slew"
+
+print "Writing activity data..."
+activity_dset = np.array(activity_dset, dtype=[("timestamp", "<f8"), ("value", "S13"), ("status", "S7")])
+antenna_sensor_group.create_dataset("activity", data=activity_dset)
+antenna_sensor_group["activity"].attrs["description"] = "Synthesised antenna behaviour label"
+antenna_sensor_group["activity"].attrs["name"] = "activity"
+antenna_sensor_group["activity"].attrs["type"] = "discrete"
+antenna_sensor_group["activity"].attrs["units"] = ""
 
 print "Writing requested azimuth..."
 azim_req_pos_dset = np.array(azim_req_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
@@ -307,11 +352,6 @@ antenna_sensor_group["pos.actual-scan-elev"].attrs["units"] = "degrees CW from N
 
 
 ### Misc other things. ###
-
-print "Adding dummy 'activity' data to the datafile."
-activity_dset = [(csv_file["Timestamp"][csv_lower_index], "scan", "nominal")]
-activity_dset = np.array(activity_dset, dtype=[("timestamp","<f8"), ("value","S13"), ("status","S7")])
-sensor_group["Antennas/ant1"].create_dataset("activity", data=activity_dset)
 
 print "Adding dummy 'label' data to the datafile."
 del h5file["Markup/labels"]

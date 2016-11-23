@@ -61,8 +61,8 @@ def _calc_azel(cache, name, ant="ant1"):
     # TODO: This version assumes the augmented datafiles, which haven't had a pointing model applied to them yet,
     #       i.e. the only data that they've got to work with is the -pointm- datasets which are the ones delivered
     #       to the ASCS, not the -scan- datasets from the KAT-7 convention. We don't have those yet.
-    #real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
-    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-pointm-azim' if name.endswith('az') else 'pos.actual-pointm-elev')
+    real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
+    #real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-pointm-azim' if name.endswith('az') else 'pos.actual-pointm-elev')
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
@@ -194,11 +194,11 @@ class H5DataV2_5(DataSet):
         # Conversion factor for WB spectrometer:
         # conversion_factor = 0.008 / 3125
         # And for the narrowband spectrometer:
-        conversion_factor = (1.0/800e6) * 512 * 4096
+        conversion_factor = (1.0/800e6) * 2048
         self.dump_period  = accumulation_length * conversion_factor
 
         # Obtain visibility data and timestamps
-        self._vis         = data_group['VisData']
+        self._vis         = data_group['VisData'][:-1,:,:]
         self._stokes      = data_group['StokesData']
         self._timestamps  = data_group['Timestamps']
         self._time_av_ll  = data_group["Left Power time average"]
@@ -206,7 +206,7 @@ class H5DataV2_5(DataSet):
         self._time_av_q   = data_group["Stokes Q time average"]
         self._time_av_u   = data_group["Stokes U time average"]
         num_dumps         = len(self._timestamps)
-        if num_dumps != self._vis.shape[0] - 1:
+        if num_dumps != self._vis.shape[0]:
             raise BrokenFile('Number of timestamps received '
                         '(%d) differs from number of dumps in data (%d)' % (num_dumps, self._vis.shape[0]))
 
@@ -311,11 +311,11 @@ class H5DataV2_5(DataSet):
             #name           = config_group["Antennas"][antenna].attrs['name']
             name            = "ant1"
             #latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            latitude        = 5.7515983
+            latitude        = 5.7515983 * np.pi / 180
             #longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            longitude       = -0.3056904
+            longitude       = -0.3056904  * np.pi / 180
             #altitude       = config_group["Antennas"][antenna].attrs['altitude']
-            altitude        = 10
+            altitude        = 116
             #diameter       = config_group["Antennas"][antenna].attrs['diameter']
             diameter        = 32
             #delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
@@ -337,7 +337,7 @@ class H5DataV2_5(DataSet):
         # ------ Extract spectral windows / frequencies ------
         # TODO: fix hardcoding
         #centre_freq = self.sensor.get('RFE/center-frequency-hz')
-        centre_freq = 4.981e9
+        centre_freq = 6.67e9
         #num_chans = get_single_value(config_group['DataFile'], 'n_chans')
         num_chans = 1024
         #if num_chans != self._vis.shape[1]:
