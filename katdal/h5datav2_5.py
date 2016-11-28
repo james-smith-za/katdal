@@ -159,6 +159,8 @@ class H5DataV2_5(DataSet):
         True if synthesised timestamps should be used to partition data set even
         if real timestamps are irregular, thereby avoiding the slow loading of
         real timestamps at the cost of slightly inaccurate label borders
+    keepdims : {False, True}, optional
+        Force vis / weights / flags to be 3-dimensional, regardless of selection
     kwargs : dict, optional
         Extra keyword arguments, typically meant for other formats and ignored
 
@@ -167,7 +169,7 @@ class H5DataV2_5(DataSet):
     file : :class:`h5py.File` object
         Underlying HDF5 file, exposed via :mod:`h5py` interface
     """
-    def __init__(self, filename, ref_ant='', time_offset=0.0, mode='r', quicklook=False, **kwargs):
+    def __init__(self, filename, ref_ant='', time_offset=0.0, mode='r', quicklook=False, keepdims=False, **kwargs):
         DataSet.__init__(self, filename, ref_ant, time_offset)
 
         # Load file
@@ -239,6 +241,7 @@ class H5DataV2_5(DataSet):
         self._time_keep = np.ones(num_dumps, dtype=np.bool)
         self.start_time = katpoint.Timestamp(data_timestamps[0] - 0.5 * self.dump_period)
         self.end_time = katpoint.Timestamp(data_timestamps[-1] + 0.5 * self.dump_period)
+        self._keepdims = keepdims
 
         # ------ Extract flags ------
         # Check if flag group is present, else use dummy flag data
@@ -512,6 +515,48 @@ class H5DataV2_5(DataSet):
         extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)  # TODO: Might need to look at this.
         return LazyIndexer(self._timestamps, keep=self._time_keep, transforms=[extract_time])
 
+    def _vislike_indexer(self, dataset, extractor):
+        """Lazy indexer for vis-like datasets (vis / weights / flags).
+
+        This operates on datasets with shape (*T*, *F*, *B*) and potentially
+        different dtypes. The data type conversions are all left to the provided
+        extractor transform, while this method takes care of the common
+        selection issues, such as preserving singleton dimensions and dealing
+        with duplicate final dumps.
+
+        Parameters
+        ----------
+        dataset : :class:`h5py.Dataset` object or equivalent
+            Underlying vis-like dataset on which lazy indexing will be done
+        extractor : function, signature ``data = f(data, keep)``
+            Transform to apply to data (`keep` is user-provided 2nd-stage index)
+
+        Returns
+        -------
+        indexer : :class:`LazyIndexer` object
+            Lazy indexer with appropriate selectors and transforms included
+
+        """
+        # Create first-stage index from dataset selectors
+        time_keep = self._time_keep
+        # If there is a duplicate final dump, these lengths don't match -> ignore last dump in file
+        if len(time_keep) == len(dataset) - 1:
+            time_keep = np.zeros(len(dataset), dtype=np.bool)
+            time_keep[:len(self._time_keep)] = self._time_keep
+        stage1 = (time_keep, self._freq_keep, self._corrprod_keep)
+
+        def _force_3dim(data, keep):
+            """Keep singleton dimensions in stage 2 (i.e. final) indexing."""
+            # Ensure that keep tuple has length of 3 (truncate or pad with blanket slices as necessary)
+            keep = keep[:3] + (slice(None),) * (3 - len(keep))
+            # Final indexing ensures that returned data are always 3-dimensional (i.e. keep singleton dimensions)
+            keep_singles = [(np.newaxis if np.isscalar(dim_keep) else slice(None))
+                            for dim_keep in keep]
+            return data[tuple(keep_singles)]
+        force_3dim = LazyTransform('force_3dim', _force_3dim)
+        transforms = [extractor, force_3dim] if self._keepdims else [extractor]
+        return LazyIndexer(dataset, stage1, transforms)
+
     @property
     def vis(self):
         """Single-dish observational data, 32-bit signed integer, LL, RR.
@@ -532,27 +577,20 @@ class H5DataV2_5(DataSet):
         data array itself from the indexer `x`, do `x[:]` or perform any other
         form of indexing on it. Only then will data be loaded into memory.
         """
-        def _extract_vis(vis, keep):
-            # Ensure that keep tuple has length of 3 (truncate or pad with blanket slices as necessary)
-            keep = keep[:3] + (slice(None),) * (3 - len(keep))
-            # Final indexing ensures that returned data are always 3-dimensional (i.e. keep singleton dimensions)
-            # Unlike the KAT-7 stuff, this isn't comlpex at all, just real-valued.
-            force_3dim = tuple([(np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep])
-            return vis.astype(np.float64)[force_3dim]
-        extract_vis = LazyTransform('extract_vis', _extract_vis, lambda shape: shape, np.float64)
-        return LazyIndexer(self._vis, transforms=[extract_vis])
+        extract = LazyTransform('extract_vis',
+                                lambda vis, keep: vis.astype(np.float32),
+                                lambda shape: shape, np.float32)
+        return self._vislike_indexer(self._vis, extract)
 
     @property
     def stokes(self):
         """Single-dish observational data, 32-bit signed integer, Stokes Q and U. Same
         (*T*, *F*, *B*) arrangement as the vis data.
         """
-        def _extract_stokes(stokes, keep):
-            keep = keep[:3] + (slice(None),) * (3 - len(keep))
-            force_3dim = tuple([(np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep])
-            return stokes.astype(np.float64)[force_3dim]
-        extract_stokes = LazyTransform('extract_stokes', _extract_stokes, lambda shape: shape, np.float64)
-        return LazyIndexer(self._stokes, transforms=[extract_stokes])
+        extract = LazyTransform('extract_stokes',
+                                lambda stokes, keep: stokes.astype(np.float32),
+                                lambda shape: shape, np.float32)
+        return self._vislike_indexer(self._stokes, extract)
 
     @property
     def time_av_ll(self):
