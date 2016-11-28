@@ -278,6 +278,8 @@ class H5DataV2_5(DataSet):
         # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
         corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
                      ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
+        # Hardcode H, V for now as L, R not supported in katdal + scape yet
+        corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
 
         stokes_prods      = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
