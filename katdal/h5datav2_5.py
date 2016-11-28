@@ -457,7 +457,8 @@ class H5DataV2_5(DataSet):
         script_ants = script_ants.split(',') if script_ants else all_ants
         #return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
         # TODO: This is hardcoded for the Ghana antenna. Just to make scape stop complaining. Do need to fix at some point.
-        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 0.1")]
+        # TODO: The "beamwidth factor" (see katpoint docs) typically ranges from 1.03 to 1.22 - find appropriate value for Ghana antenna
+        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 1.03")]
 
     @staticmethod
     def _get_targets(filename):
