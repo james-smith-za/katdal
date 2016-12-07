@@ -11,13 +11,13 @@ import katpoint
 
 # Set up option parser
 from optparse import OptionParser
-option_parser = OptionParser(usage="python %prog [options] filename")
+option_parser = OptionParser(usage="python %prog [options] h5filename csvfilename pmodlfilename")
 
 # Not using any options at this stage, just the arguments. May want more flexibility in future.
 (options, args) = option_parser.parse_args()
 
-if len(args) != 2:
-    option_parser.error("Wrong number of arguments - two filename expected, %d arguments received."%(len(args)))
+if len(args) != 3:
+    option_parser.error("Wrong number of arguments - three filenames expected, %d arguments received."%(len(args)))
 
 try:
     print "Opening %s for augmenting..."%(args[0])
@@ -36,8 +36,85 @@ except IOError:
     exit()
 except pd.parser.CParserError:
     # TODO: point to the line number. Figure out how to get exception's text.
-    print "Line size problem in csv file. Must fix manually."
+    print "Line size problem in csv file. Must fix manually. Easiest to do this using a spreadsheet package."
     exit()
+
+try:
+    print "Opening %s for FS pointing model..."%(args[2])
+    pmodl_file = open(args[2])
+except IOError:
+    print "Error opening pointing model file! Check spelling and path."
+    # TODO: Think of branching and using a default (zero) pointing model if none is included.
+    exit()
+
+# Credit to http://stackoverflow.com/a/12737895 for this function:
+def decdeg2dms(dd):
+    negative = dd < 0
+    dd = abs(dd)
+    minutes,seconds = divmod(dd*3600,60)
+    degrees,minutes = divmod(minutes,60)
+    if negative:
+        if degrees > 0:
+            degrees = -degrees
+        elif minutes > 0:
+            minutes = -minutes
+        else:
+            seconds = -seconds
+    return (int(degrees),int(minutes),float(seconds))
+
+def fs_to_kp_pointing_model(pmodl_file):
+    """Parses a Field System pointing model file (mdlpo.ctl)
+    Returns:
+        katpoint pointing model (object? string?)
+    """
+    if not isinstance(pmodl_file, file):
+        raise TypeError("%s not a text file."%(repr(pmodl_file)))
+    lines = []
+    for i in pmodl_file:
+        lines.append(i)
+    if len(lines) != 19:
+        raise TypeError("%s not correct length for pointing model file. File is %d lines long."%(repr(pmodl_file), len(lines)))
+    # Line 5 gives the enabled parameters:
+    params_implemented = lines[5].split()
+
+    if len(params_implemented) != 31:
+        raise TypeError("%s not correct format for pointing model file." % (repr(pmodl_file)))
+    # The first number on the line is the phi value
+    phi = float(params_implemented[0])
+
+    # If any of the higher ones are used, throw a warning: (TODO: figure out how to do this properly in Python)
+    if params_implemented[23] == '1' or \
+       params_implemented[24] == '1' or \
+       params_implemented[25] == '1' or \
+       params_implemented[26] == '1' or \
+       params_implemented[27] == '1' or \
+       params_implemented[28] == '1' or \
+       params_implemented[29] == '1' or \
+       params_implemented[30] == '1':
+        print "Warning: params 23 - 30 are not used in Katpoint, but are used in the pointing model file."
+
+    # Lines 7, 9, 11, 13, 15 and 17 each have 5 parameters on them.
+    params = [ 0 ] # Ppad place number 0 so that the numbers correspond.
+    params.extend(lines[7].split())
+    params.extend(lines[9].split())
+    params.extend(lines[11].split())
+    params.extend(lines[13].split())
+    params.extend(lines[15].split())
+    params.extend(lines[17].split())
+
+    pmodl_string = ""
+
+    for i in range(1,23):
+        if params_implemented[i] == '1' and float(params[i]) != 0:
+            pmodl_string += "%02d:%02d:%06.3f "%(decdeg2dms(float(params[i]))) # I had thought that Katpoint needs dd:mm:ss.xx format, but apparently it doesn't.
+            # pmodl_string += "%s "%(params[i])
+
+        else:
+            pmodl_string += "0 "
+
+    pmodl_string = pmodl_string[:-1] # Remove the resulting space on the end.
+    return pmodl_string
+
 
 ##### Miscellaneous info about the file printed for the user's convenience. #####
 timestamps = h5file["Data/Timestamps"]
@@ -55,6 +132,7 @@ print "Number of frequency channels:\t%d"%(vis_shape[1])
 
 
 sensor_group = h5file["MetaData/Sensors"]
+config_group = h5file["MetaData/Configuration"]
 
 ##### Weather / Environment information #####
 # This section ought only to be here temporarily. At time of writing (Oct 2016), the
@@ -123,37 +201,37 @@ try:
     print "\nPopulating air temperature dataset with %.2f degrees..."%(temperature)
     enviro_group.create_dataset("air.temperature", data=temperature_dset)
     enviro_group["air.temperature"].attrs["description"] = "Air temperature"
-    enviro_group["air.temperature"].attrs["name"] = "air.temperature"
-    enviro_group["air.temperature"].attrs["type"] = "float64"
-    enviro_group["air.temperature"].attrs["units"] = "degC"
+    enviro_group["air.temperature"].attrs["name"]        = "air.temperature"
+    enviro_group["air.temperature"].attrs["type"]        = "float64"
+    enviro_group["air.temperature"].attrs["units"]       = "degC"
 
     print "Populating air pressure dataset with %.2f mbar..."%(pressure)
     enviro_group.create_dataset("air.pressure", data=pressure_dset)
     enviro_group["air.pressure"].attrs["description"] = "Air pressure"
-    enviro_group["air.pressure"].attrs["name"] = "air.pressure"
-    enviro_group["air.pressure"].attrs["type"] = "float64"
-    enviro_group["air.pressure"].attrs["units"] = "mbar"
+    enviro_group["air.pressure"].attrs["name"]        = "air.pressure"
+    enviro_group["air.pressure"].attrs["type"]        = "float64"
+    enviro_group["air.pressure"].attrs["units"]       = "mbar"
 
     print "Populating relative humidity dataset with %.2f percent..."%(humidity)
     enviro_group.create_dataset("relative.humidity", data=humidity_dset)
     enviro_group["relative.humidity"].attrs["description"] = "Relative humidity"
-    enviro_group["relative.humidity"].attrs["name"] = "relative.humidity"
-    enviro_group["relative.humidity"].attrs["type"] = "float64"
-    enviro_group["relative.humidity"].attrs["units"] = "percent"
+    enviro_group["relative.humidity"].attrs["name"]        = "relative.humidity"
+    enviro_group["relative.humidity"].attrs["type"]        = "float64"
+    enviro_group["relative.humidity"].attrs["units"]       = "percent"
 
     print "Populating wind speed dataset with %.2f m/s..."%(windspeed)
     enviro_group.create_dataset("wind.speed", data=windspeed_dset)
     enviro_group["wind.speed"].attrs["description"] = "Wind speed"
-    enviro_group["wind.speed"].attrs["name"] = "wind.speed"
-    enviro_group["wind.speed"].attrs["type"] = "float64"
-    enviro_group["wind.speed"].attrs["units"] = "m/s"
+    enviro_group["wind.speed"].attrs["name"]        = "wind.speed"
+    enviro_group["wind.speed"].attrs["type"]        = "float64"
+    enviro_group["wind.speed"].attrs["units"]       = "m/s"
 
     print "Populating wind direction dataset with %.2f degrees (bearing)..."%(winddirection)
     enviro_group.create_dataset("wind.direction", data=winddirection_dset)
     enviro_group["wind.direction"].attrs["description"] = "Wind direction"
-    enviro_group["wind.direction"].attrs["name"] = "wind.direction"
-    enviro_group["wind.direction"].attrs["type"] = "float64"
-    enviro_group["wind.direction"].attrs["units"] = "degrees (bearing)"
+    enviro_group["wind.direction"].attrs["name"]        = "wind.direction"
+    enviro_group["wind.direction"].attrs["type"]        = "float64"
+    enviro_group["wind.direction"].attrs["units"]       = "degrees (bearing)"
 except RuntimeError:
     print "Environment sensor dataset(s) already exist. Datafile previously augmented?"
 else:
@@ -175,7 +253,13 @@ antenna_pos_dataset_list = ["target",
                             "pos.actual-pointm-azim",
                             "pos.actual-pointm-elev",
                             "pos.request-pointm-azim",
-                            "pos.request-pointm-elev"]
+                            "pos.request-pointm-elev",
+                            "pos.source-offset-azim",
+                            "pos.source-offset-elev",
+                            "motor-torque.az-master",
+                            "motor-torque.az-slave",
+                            "motor-torque.el-master",
+                            "motor-torque.el-slave"]
 
 # TODO: At the moment the assumption is that the RoachAcquisitionServer is making sterile datasets here and they need to be removed.
 # This may at some stage not be true, and it would probably help to include some protection against re-augmenting a data file by accident.
@@ -197,10 +281,10 @@ csv_duration_str = "%dh %dm %.2fs"%( int(csv_duration/3600), int(csv_duration - 
 print "Pos data start:\t\t%s UTC\nPos data end:\t\t%s UTC\nDuration:\t\t%s\n"%(datetime.datetime.fromtimestamp(csv_begin_time).isoformat(), datetime.datetime.fromtimestamp(csv_end_time).isoformat(), csv_duration_str)
 
 if (begin_time < csv_begin_time) or (end_time > csv_end_time):
-    #print "\nError! RF data not completely covered by position data!\nExiting..."
-    #h5file.close()
-    #exit()
-    pass
+    print "\nError! RF data not completely covered by position data!\nExiting..."
+    h5file.close()
+    exit()
+    #pass
 else:
     print "Overlap detected."
 
@@ -226,7 +310,7 @@ try:
     while (float(csv_file["Timestamp"][csv_upper_index]) / 1000.0) > end_time:
         csv_upper_index -= 1
         # While loop will break when it gets lower or equal to
-    #csv_upper_index += 1 # Set it back to just after the RF data ends.
+    csv_upper_index += 1 # Set it back to just after the RF data ends.
     print "\nUpper bound: %d."%(csv_upper_index)
     print "CSV upper index: %.2f\tH5file upper index: %.2f"%(csv_file["Timestamp"][csv_upper_index]/1000, end_time)
     print "Position data extens to %.2f seconds after RF data."%(np.abs(csv_file["Timestamp"][csv_upper_index] / 1000 - end_time))
@@ -240,19 +324,29 @@ timestamp_array = np.array(csv_file["Timestamp"][csv_lower_index:csv_upper_index
 # Unfortunately no elegant way to do this really... as far as I can tell.
 target_dset           = []
 activity_dset         = []
-azim_req_pos_dset     = []
-azim_desired_pos_dset = []
-azim_actual_pos_dset  = []
-elev_req_pos_dset     = []
-elev_desired_pos_dset = []
-elev_actual_pos_dset  = []
+
+azim_req_pointm_pos_dset = []
+azim_des_pointm_pos_dset = []
+azim_act_pointm_pos_dset = []
+elev_req_pointm_pos_dset = []
+elev_des_pointm_pos_dset = []
+elev_act_pointm_pos_dset = []
+
+azim_req_scan_pos_dset = []
+azim_des_scan_pos_dset = []
+azim_act_scan_pos_dset = []
+elev_req_scan_pos_dset = []
+elev_des_scan_pos_dset = []
+elev_act_scan_pos_dset = []
 
 antenna_sensor_group = sensor_group["Antennas/ant1"]
 
-# If not for the attributes required in each thing, this whole thing could just be done with a for loop and a dictionary...
-# Status message just 'nominal' for the moment. Until such time as there are some parameters where it should be otherwise
-antenna_str = "Kuntunse, 5:45:2.48, -0:18:17.92, 116, 32.0"
+# TODO: This should ideally come from the file, not be hardcoded here.
+# Note: The 0 0 0 just before the %s is the "delay model" which katpoint expects. We don't use it.
+antenna_str = "Kuntunse, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s"%(fs_to_kp_pointing_model(pmodl_file))
+config_group["Antennas/ant1"].attrs["description"] = antenna_str
 antenna = katpoint.Antenna(antenna_str)
+print antenna.pointing_model
 activity = "slew"
 
 target = raw_input("Enter target in katpoint string format:\n(name, radec, 00:00:00.00, 00:00:00.00)\n")
@@ -270,25 +364,50 @@ antenna_sensor_group["target"].attrs["units"] = ""
 print "Reading position data from csv file into memory..."
 activity_dset.append((csv_file["Timestamp"][csv_lower_index]/1000, "slew", "nominal"))
 
+for i in range(0, len(timestamp_array), 20): #Down-sample by a factor of 20
+    azim_req_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim req position"][csv_lower_index + i],     "nominal"))
+    azim_des_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
+    azim_act_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim actual position"][csv_lower_index + i],  "nominal"))
+    elev_req_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev req position"][csv_lower_index + i],     "nominal"))
+    elev_des_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
+    elev_act_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev actual position"][csv_lower_index + i],  "nominal"))
 
-for i in range(0, len(timestamp_array), 10): #Down-sample by 10
-    azim_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim req position"][csv_lower_index + i], "nominal"))
-    azim_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
-    azim_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Azim actual position"][csv_lower_index + i], "nominal"))
-    elev_req_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev req position"][csv_lower_index + i], "nominal"))
-    elev_desired_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
-    elev_actual_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, csv_file["Elev actual position"][csv_lower_index + i], "nominal"))
+    azim_req_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev req position"][csv_lower_index + i]))[0]),
+                                   "nominal"))
+    elev_req_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev req position"][csv_lower_index + i]))[1]),
+                                   "nominal"))
+    azim_des_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev desired position"][csv_lower_index + i]))[0]),
+                                   "nominal"))
+    elev_des_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev desired position"][csv_lower_index + i]))[1]),
+                                   "nominal"))
+    azim_act_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev actual position"][csv_lower_index + i]))[0]),
+                                   "nominal"))
+    elev_act_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][csv_lower_index + i]),
+                                                                             np.radians(csv_file["Elev actual position"][csv_lower_index + i]))[1]),
+                                   "nominal"))
+
     req_target = katpoint.construct_azel_target(csv_file["Azim req position"][csv_lower_index + i], csv_file["Elev req position"][csv_lower_index + i])
     req_target.antenna = antenna
     actual_target = katpoint.construct_azel_target(csv_file["Azim actual position"][csv_lower_index + i], csv_file["Elev actual position"][csv_lower_index + i])
     actual_target.antenna = antenna
     if activity == "slew":
-        if actual_target.separation(req_target) < 0.05:
+        if actual_target.separation(req_target) < 0.005: # a twentieth of a HPBW
             activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "scan", "nominal"))
             activity = "scan"
     else:
         #if activity == "scan":
-        if actual_target.separation(req_target) > 0.09:
+        if actual_target.separation(req_target) > 0.05: # Half of a HPBW
             activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "slew", "nominal"))
             activity = "slew"
 
@@ -301,55 +420,95 @@ antenna_sensor_group["activity"].attrs["type"] = "discrete"
 antenna_sensor_group["activity"].attrs["units"] = ""
 
 print "Writing requested azimuth..."
-azim_req_pos_dset = np.array(azim_req_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-pointm-azim", data=azim_req_pos_dset)
+azim_req_pointm_pos_dset = np.array(azim_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.request-pointm-azim", data=azim_req_pointm_pos_dset)
 antenna_sensor_group["pos.request-pointm-azim"].attrs["description"] = "Requested (by user or Field System) azimuth position."
 antenna_sensor_group["pos.request-pointm-azim"].attrs["name"] = "pos.request-pointm-azim"
 antenna_sensor_group["pos.request-pointm-azim"].attrs["type"] = "float64"
 antenna_sensor_group["pos.request-pointm-azim"].attrs["units"] = "degrees CW from N"
 
+azim_req_scan_pos_dset = np.array(azim_req_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.request-scan-azim", data=azim_req_scan_pos_dset)
+antenna_sensor_group["pos.request-scan-azim"].attrs["description"] = "Requested (by user or Field System) azimuth position."
+antenna_sensor_group["pos.request-scan-azim"].attrs["name"] = "pos.request-scan-azim"
+antenna_sensor_group["pos.request-scan-azim"].attrs["type"] = "float64"
+antenna_sensor_group["pos.request-scan-azim"].attrs["units"] = "degrees CW from N"
+
 print "Writing desired azimuth..."
-azim_desired_pos_dset = np.array(azim_desired_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-azim", data=azim_desired_pos_dset)
+azim_des_pointm_pos_dset = np.array(azim_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.desired-pointm-azim", data=azim_des_pointm_pos_dset)
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["description"] = "Intermediate azimuth position setpoint used by the ASCS."
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["name"] = "pos.desired-pointm-azim"
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["type"] = "float64"
 antenna_sensor_group["pos.desired-pointm-azim"].attrs["units"] = "degrees CW from N"
 
-# TODO: This needs to change back to 'pointm' at some point. I've fudged it into 'scan' so that scape will read it.
+azim_des_scan_pos_dset = np.array(azim_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.desired-scan-azim", data=azim_des_scan_pos_dset)
+antenna_sensor_group["pos.desired-scan-azim"].attrs["description"] = "Intermediate azimuth position setpoint used by the ASCS."
+antenna_sensor_group["pos.desired-scan-azim"].attrs["name"] = "pos.desired-scan-azim"
+antenna_sensor_group["pos.desired-scan-azim"].attrs["type"] = "float64"
+antenna_sensor_group["pos.desired-scan-azim"].attrs["units"] = "degrees CW from N"
+
 print "Writing actual azimuth..."
-azim_actual_pos_dset = np.array(azim_actual_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-azim", data=azim_actual_pos_dset)
+azim_act_pointm_pos_dset = np.array(azim_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.actual-pointm-azim", data=azim_act_pointm_pos_dset)
+antenna_sensor_group["pos.actual-pointm-azim"].attrs["description"] = "Azimuth data returned by the encoder."
+antenna_sensor_group["pos.actual-pointm-azim"].attrs["name"] = "pos.actual-pointm-azim"
+antenna_sensor_group["pos.actual-pointm-azim"].attrs["type"] = "float64"
+antenna_sensor_group["pos.actual-pointm-azim"].attrs["units"] = "degrees CW from N"
+
+azim_act_scan_pos_dset = np.array(azim_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.actual-scan-azim", data=azim_act_scan_pos_dset)
 antenna_sensor_group["pos.actual-scan-azim"].attrs["description"] = "Azimuth data returned by the encoder."
 antenna_sensor_group["pos.actual-scan-azim"].attrs["name"] = "pos.actual-scan-azim"
 antenna_sensor_group["pos.actual-scan-azim"].attrs["type"] = "float64"
 antenna_sensor_group["pos.actual-scan-azim"].attrs["units"] = "degrees CW from N"
 
 print "Writing requested elevation..."
-elev_req_pos_dset = np.array(elev_req_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-pointm-elev", data=elev_req_pos_dset)
+elev_req_pointm_pos_dset = np.array(elev_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.request-pointm-elev", data=elev_req_pointm_pos_dset)
 antenna_sensor_group["pos.request-pointm-elev"].attrs["description"] = "Requested (by user or Field System) elevation position."
 antenna_sensor_group["pos.request-pointm-elev"].attrs["name"] = "pos.request-pointm-elev"
 antenna_sensor_group["pos.request-pointm-elev"].attrs["type"] = "float64"
 antenna_sensor_group["pos.request-pointm-elev"].attrs["units"] = "degrees CW from N"
 
+elev_req_scan_pos_dset = np.array(elev_req_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.request-scan-elev", data=elev_req_scan_pos_dset)
+antenna_sensor_group["pos.request-scan-elev"].attrs["description"] = "Requested (by user or Field System) elevation position."
+antenna_sensor_group["pos.request-scan-elev"].attrs["name"] = "pos.request-scan-elev"
+antenna_sensor_group["pos.request-scan-elev"].attrs["type"] = "float64"
+antenna_sensor_group["pos.request-scan-elev"].attrs["units"] = "degrees CW from N"
+
 print "Writing desired elevation..."
-elev_desired_pos_dset = np.array(elev_desired_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-elev", data=elev_desired_pos_dset)
+elev_des_pointm_pos_dset = np.array(elev_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.desired-pointm-elev", data=elev_des_pointm_pos_dset)
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["description"] = "Intermediate elevation position setpoint used by the ASCS."
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["name"] = "pos.desired-pointm-elev"
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["type"] = "float64"
 antenna_sensor_group["pos.desired-pointm-elev"].attrs["units"] = "degrees CW from N"
 
+elev_des_scan_pos_dset = np.array(elev_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.desired-scan-elev", data=elev_des_scan_pos_dset)
+antenna_sensor_group["pos.desired-scan-elev"].attrs["description"] = "Intermediate elevation position setpoint used by the ASCS."
+antenna_sensor_group["pos.desired-scan-elev"].attrs["name"] = "pos.desired-scan-elev"
+antenna_sensor_group["pos.desired-scan-elev"].attrs["type"] = "float64"
+antenna_sensor_group["pos.desired-scan-elev"].attrs["units"] = "degrees CW from N"
+
 # TODO: This needs to change back to 'pointm' at some point. I've fudged it into 'scan' so that scape will read it.
 print "Writing actual elevation..."
-elev_actual_pos_dset = np.array(elev_actual_pos_dset, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-elev", data=elev_actual_pos_dset)
+elev_act_pointm_pos_dset = np.array(elev_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.actual-pointm-elev", data=elev_act_pointm_pos_dset)
+antenna_sensor_group["pos.actual-pointm-elev"].attrs["description"] = "Elevation data returned by the encoder."
+antenna_sensor_group["pos.actual-pointm-elev"].attrs["name"] = "pos.actual-pointm-elev"
+antenna_sensor_group["pos.actual-pointm-elev"].attrs["type"] = "float64"
+antenna_sensor_group["pos.actual-pointm-elev"].attrs["units"] = "degrees CW from N"
+
+elev_act_scan_pos_dset = np.array(elev_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+antenna_sensor_group.create_dataset("pos.actual-scan-elev", data=elev_act_scan_pos_dset)
 antenna_sensor_group["pos.actual-scan-elev"].attrs["description"] = "Elevation data returned by the encoder."
 antenna_sensor_group["pos.actual-scan-elev"].attrs["name"] = "pos.actual-scan-elev"
 antenna_sensor_group["pos.actual-scan-elev"].attrs["type"] = "float64"
 antenna_sensor_group["pos.actual-scan-elev"].attrs["units"] = "degrees CW from N"
-
 
 ### Misc other things. ###
 
