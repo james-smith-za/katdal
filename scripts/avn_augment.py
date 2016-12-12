@@ -16,8 +16,8 @@ option_parser = OptionParser(usage="python %prog [options] h5filename csvfilenam
 # Not using any options at this stage, just the arguments. May want more flexibility in future.
 (options, args) = option_parser.parse_args()
 
-if len(args) != 3:
-    option_parser.error("Wrong number of arguments - three filenames expected, %d arguments received."%(len(args)))
+if not (len(args) == 3 or len(args) == 2):
+    option_parser.error("Wrong number of arguments - two or three filenames expected, %d arguments received."%(len(args)))
 
 try:
     print "Opening %s for augmenting..."%(args[0])
@@ -42,10 +42,10 @@ except pd.parser.CParserError:
 try:
     print "Opening %s for FS pointing model..."%(args[2])
     pmodl_file = open(args[2])
-except IOError:
-    print "Error opening pointing model file! Check spelling and path."
-    # TODO: Think of branching and using a default (zero) pointing model if none is included.
-    exit()
+except (IOError, IndexError):
+    print "Error opening pointing model file! Check spelling and path. Using default (zero) pointing model."
+    pmodl_file = None
+
 
 # Credit to http://stackoverflow.com/a/12737895 for this function:
 def decdeg2dms(dd):
@@ -67,6 +67,11 @@ def fs_to_kp_pointing_model(pmodl_file):
     Returns:
         katpoint pointing model (object? string?)
     """
+    if pmodl_file == None:
+        pmodl_string = "0 " * 22
+        pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
+        return pmodl_string
+
     if not isinstance(pmodl_file, file):
         raise TypeError("%s not a text file."%(repr(pmodl_file)))
     lines = []
@@ -82,7 +87,7 @@ def fs_to_kp_pointing_model(pmodl_file):
     # The first number on the line is the phi value
     phi = float(params_implemented[0])
 
-    # If any of the higher ones are used, throw a warning: (TODO: figure out how to do this properly in Python)
+    # If any of the higher ones are used, throw a warning: (TODO: figure out how to do this properly in Python. There must be a prettier way.)
     if params_implemented[23] == '1' or \
        params_implemented[24] == '1' or \
        params_implemented[25] == '1' or \
@@ -118,15 +123,15 @@ def fs_to_kp_pointing_model(pmodl_file):
 
 ##### Miscellaneous info about the file printed for the user's convenience. #####
 timestamps = h5file["Data/Timestamps"]
-begin_time = timestamps[0]
-end_time = timestamps[-1]
-duration = end_time - begin_time
+rf_begin_time = timestamps[0]
+rf_end_time = timestamps[-1]
+duration = rf_end_time - rf_begin_time
 duration_str = "%dh %dm %.2fs"%( int(duration/3600), int(duration - int(duration/3600)*3600)/60, duration - int(duration/3600)*3600 - (int(duration - int(duration/3600)*3600)/60)*60)
-print "Recording start:\t\t%s UTC\nRecording end:\t\t\t%s UTC\nDuration:\t\t\t%s\n"%(datetime.datetime.fromtimestamp(begin_time).isoformat(), datetime.datetime.fromtimestamp(end_time).isoformat(), duration_str)
+print "Recording start:\t\t%s UTC\nRecording end:\t\t\t%s UTC\nDuration:\t\t\t%s\n"%(datetime.datetime.fromtimestamp(rf_begin_time).isoformat(), datetime.datetime.fromtimestamp(rf_end_time).isoformat(), duration_str)
 
 vis_shape = h5file["Data/VisData"].shape
 
-print "Accumulation length:\t\t%.2f ms"%((timestamps[1] - timestamps[0])*1000)
+print "Accumulation length:\t\t%.2f ms"%((timestamps[1] - timestamps[0])*1000.0)
 print "Number of accums:\t\t%d"%(vis_shape[0] - 1)
 print "Number of frequency channels:\t%d"%(vis_shape[1])
 
@@ -160,7 +165,7 @@ except ValueError:
     print "Warning! Enviro group already exists. File may already have been previously augmented. Carry on regardless."
     enviro_group = sensor_group["Enviro"]
 
-enviro_timestamps = np.arange(begin_time, end_time, 10, dtype=np.float64) # The enviro sensor data needn't be high resolution, 10 seconds for dummy data should be okay.
+enviro_timestamps = np.arange(rf_begin_time, rf_end_time, 10, dtype=np.float64) # The enviro sensor data needn't be high resolution, 10 seconds for dummy data should be okay.
 
 temperature_array   = []
 pressure_array      = []
@@ -274,52 +279,88 @@ for dset_name in antenna_pos_dataset_list:
 print "\nOpening %s for position sensor addition..."%(args[1])
 # Check to see that the files line up in at least some way.
 
-csv_begin_time = float(csv_file["Timestamp"][0]) / 1000
-csv_end_time   = float(csv_file["Timestamp"][len(csv_file["Timestamp"]) - 1]) / 1000
-csv_duration = csv_end_time - csv_begin_time
+pos_begin_time = float(csv_file["Timestamp"][0]) / 1000.0
+pos_end_time   = float(csv_file["Timestamp"][len(csv_file["Timestamp"]) - 1]) / 1000.0
+csv_duration = pos_end_time - pos_begin_time
 csv_duration_str = "%dh %dm %.2fs"%( int(csv_duration/3600), int(csv_duration - int(csv_duration/3600)*3600)/60, csv_duration - int(csv_duration/3600)*3600 - (int(csv_duration - int(csv_duration/3600)*3600)/60)*60)
-print "Pos data start:\t\t%s UTC\nPos data end:\t\t%s UTC\nDuration:\t\t%s\n"%(datetime.datetime.fromtimestamp(csv_begin_time).isoformat(), datetime.datetime.fromtimestamp(csv_end_time).isoformat(), csv_duration_str)
+print "Pos data start:\t\t%s UTC\nPos data end:\t\t%s UTC\nDuration:\t\t%s\n"%(datetime.datetime.fromtimestamp(pos_begin_time).isoformat(), datetime.datetime.fromtimestamp(pos_end_time).isoformat(), csv_duration_str)
 
-if (begin_time < csv_begin_time) or (end_time > csv_end_time):
-    print "\nError! RF data not completely covered by position data!\nExiting..."
+complete_overlap = True # This could probably be named better.
+
+rf_begins_after_pos_ends   = rf_begin_time > pos_end_time
+rf_ends_before_pos_begins  = rf_end_time < pos_begin_time
+
+if rf_begins_after_pos_ends or rf_ends_before_pos_begins:
+    print "RF and position data do not overlap at all. Nothing more to do here..."
     h5file.close()
     exit()
-    #pass
-else:
-    print "Overlap detected."
 
-# Now to find where in the csv datafile the overlap is. No sense in putting the whole thing in.
-# Explanation about these try/except statements: If there are multiple log .txt files, then I tend to just
-# cat them together. The header lines get interleaved as well though, which fact took me quite a while to
-# figure out... I need a more unix-y cat command to do it properly.
+continue_process = True
+
+adjust_begin     = True
+adjust_end       = True
+
+rf_begins_after_pos_begins = rf_begin_time > pos_begin_time
+rf_ends_before_pos_ends    = rf_end_time   < pos_end_time
+
+if not rf_begins_after_pos_begins:
+    adjust_begin     = False
+    continue_process = False
+    print "Pos data starts after RF data."
+elif not rf_ends_before_pos_ends:
+    adjust_end       = False
+    continue_process = False
+    print "Pos data finishes before RF data."
+
+if not continue_process:
+    while True:
+        user_input = raw_input("Continue the process? (y/n) ")
+        if user_input.lower() in ["yes", "y"]:
+            continue_process = True
+            break
+        elif user_input.lower() in ["no", "n"]:
+            continue_process = False
+            print "Exiting..."
+            h5file.close()
+            exit()
+            break
+        else:
+            print "Invalid input."
 
 try:
-    csv_lower_index = 0
-    while (float(csv_file["Timestamp"][csv_lower_index]) / 1000.0) < begin_time:
-        csv_lower_index += 1
-        # While loop will break when it gets lower or equal to
-    csv_lower_index -= 1 # Set it back to just before the RF data starts.
-    print "\nLower bound: %d."%(csv_lower_index)
-    print "CSV lower index: %.2f\tH5file lower index: %.2f"%(csv_file["Timestamp"][csv_lower_index]/1000, begin_time)
-    print "Position data commences %.2f seconds before start of RF data."%(np.abs(csv_file["Timestamp"][csv_lower_index] / 1000 - begin_time))
+    pos_lower_index = 0
+    if adjust_begin:
+        while (float(csv_file["Timestamp"][pos_lower_index]) / 1000.0) < rf_begin_time:
+            pos_lower_index += 1
+            # While loop will break when it gets lower or equal to
+        pos_lower_index -= 1 # ... and one step back to ensure complete coverage
+
+    print "\nLower bound: %d."%(pos_lower_index)
+    print "CSV lower index: %.2f\tH5file lower index: %.2f"%(csv_file["Timestamp"][pos_lower_index] / 1000.0, rf_begin_time)
+    print "Position data commences %.2f seconds %s start of RF data."%(np.abs(csv_file["Timestamp"][pos_lower_index] / 1000.0 - rf_begin_time), "before" if adjust_begin else "after")
 except ValueError:
-    print "There are funny lines in the CSV file. They might be somewhere around line %d."%(csv_lower_index)
+    print "Error. There are funny lines in the CSV file. They might be somewhere around line %d."%(pos_lower_index)
+    h5file.close()
+    exit()
 
 try:
-    csv_upper_index = len(csv_file["Timestamp"]) - 1
-    while (float(csv_file["Timestamp"][csv_upper_index]) / 1000.0) > end_time:
-        csv_upper_index -= 1
-        # While loop will break when it gets lower or equal to
-    csv_upper_index += 1 # Set it back to just after the RF data ends.
-    print "\nUpper bound: %d."%(csv_upper_index)
-    print "CSV upper index: %.2f\tH5file upper index: %.2f"%(csv_file["Timestamp"][csv_upper_index]/1000, end_time)
-    print "Position data extens to %.2f seconds after RF data."%(np.abs(csv_file["Timestamp"][csv_upper_index] / 1000 - end_time))
+    pos_upper_index = len(csv_file["Timestamp"]) - 1
+    if adjust_end:
+        while (float(csv_file["Timestamp"][pos_upper_index]) / 1000.0) > rf_end_time:
+            pos_upper_index -= 1
+            # While loop will break when it gets lower or equal to
+        pos_upper_index += 1 # Set it back to just after the RF data ends.
+    print "\nUpper bound: %d."%(pos_upper_index)
+    print "CSV upper index: %.2f\tH5file upper index: %.2f"%(csv_file["Timestamp"][pos_upper_index] / 1000.0, rf_end_time)
+    print "Position data extens to %.2f seconds %s RF data."%(np.abs(csv_file["Timestamp"][pos_upper_index] / 1000.0 - rf_end_time), "after" if adjust_end else "before")
 except ValueError:
-    print "There is a fault in the CSV file. It might be somewhere around line %d."%(csv_upper_index)
+    print "There is a fault in the CSV file. It might be somewhere around line %d."%(pos_upper_index)
+    h5file.close()
+    exit()
 
 # What remains to do is to have the relevant data in numpy arrays ready for the splicing into the HDF5 file.
 
-timestamp_array = np.array(csv_file["Timestamp"][csv_lower_index:csv_upper_index], dtype=[("timestamp","<f8")])
+timestamp_array = np.array(csv_file["Timestamp"][pos_lower_index:pos_upper_index], dtype=[("timestamp", "<f8")])
 
 # Unfortunately no elegant way to do this really... as far as I can tell.
 target_dset           = []
@@ -350,7 +391,7 @@ print antenna.pointing_model
 activity = "slew"
 
 target = raw_input("Enter target in katpoint string format:\n(name, radec, 00:00:00.00, 00:00:00.00)\n")
-target_dset.append((csv_file["Timestamp"][csv_lower_index]/1000, target, "nominal"))
+target_dset.append((float(csv_file["Timestamp"][pos_lower_index]) / 1000.0, target, "nominal"))
 print "Writing target data..."
 target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
 antenna_sensor_group.create_dataset("target", data=target_dset)
@@ -362,53 +403,53 @@ antenna_sensor_group["target"].attrs["units"] = ""
 
 
 print "Reading position data from csv file into memory..."
-activity_dset.append((csv_file["Timestamp"][csv_lower_index]/1000, "slew", "nominal"))
+activity_dset.append((csv_file["Timestamp"][pos_lower_index] / 1000.0, "slew", "nominal"))
 
 for i in range(0, len(timestamp_array), 20): #Down-sample by a factor of 20
-    azim_req_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim req position"][csv_lower_index + i],     "nominal"))
-    azim_des_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim desired position"][csv_lower_index + i], "nominal"))
-    azim_act_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Azim actual position"][csv_lower_index + i],  "nominal"))
-    elev_req_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev req position"][csv_lower_index + i],     "nominal"))
-    elev_des_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev desired position"][csv_lower_index + i], "nominal"))
-    elev_act_pointm_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000, csv_file["Elev actual position"][csv_lower_index + i],  "nominal"))
+    azim_req_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Azim req position"][pos_lower_index + i], "nominal"))
+    azim_des_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Azim desired position"][pos_lower_index + i], "nominal"))
+    azim_act_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Azim actual position"][pos_lower_index + i], "nominal"))
+    elev_req_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Elev req position"][pos_lower_index + i], "nominal"))
+    elev_des_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Elev desired position"][pos_lower_index + i], "nominal"))
+    elev_act_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0, csv_file["Elev actual position"][pos_lower_index + i], "nominal"))
 
-    azim_req_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev req position"][csv_lower_index + i]))[0]),
+    azim_req_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev req position"][pos_lower_index + i]))[0]),
                                    "nominal"))
-    elev_req_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev req position"][csv_lower_index + i]))[1]),
+    elev_req_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim req position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev req position"][pos_lower_index + i]))[1]),
                                    "nominal"))
-    azim_des_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev desired position"][csv_lower_index + i]))[0]),
+    azim_des_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev desired position"][pos_lower_index + i]))[0]),
                                    "nominal"))
-    elev_des_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev desired position"][csv_lower_index + i]))[1]),
+    elev_des_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim desired position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev desired position"][pos_lower_index + i]))[1]),
                                    "nominal"))
-    azim_act_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev actual position"][csv_lower_index + i]))[0]),
+    azim_act_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev actual position"][pos_lower_index + i]))[0]),
                                    "nominal"))
-    elev_act_scan_pos_dset.append((csv_file["Timestamp"][csv_lower_index + i] / 1000,
-                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][csv_lower_index + i]),
-                                                                             np.radians(csv_file["Elev actual position"][csv_lower_index + i]))[1]),
+    elev_act_scan_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
+                                   np.degrees(antenna.pointing_model.reverse(np.radians(csv_file["Azim actual position"][pos_lower_index + i]),
+                                                                             np.radians(csv_file["Elev actual position"][pos_lower_index + i]))[1]),
                                    "nominal"))
 
-    req_target = katpoint.construct_azel_target(csv_file["Azim req position"][csv_lower_index + i], csv_file["Elev req position"][csv_lower_index + i])
+    req_target = katpoint.construct_azel_target(csv_file["Azim req position"][pos_lower_index + i], csv_file["Elev req position"][pos_lower_index + i])
     req_target.antenna = antenna
-    actual_target = katpoint.construct_azel_target(csv_file["Azim actual position"][csv_lower_index + i], csv_file["Elev actual position"][csv_lower_index + i])
+    actual_target = katpoint.construct_azel_target(csv_file["Azim actual position"][pos_lower_index + i], csv_file["Elev actual position"][pos_lower_index + i])
     actual_target.antenna = antenna
     if activity == "slew":
         if actual_target.separation(req_target) < 0.005: # a twentieth of a HPBW
-            activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "scan", "nominal"))
+            activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "scan", "nominal"))
             activity = "scan"
     else:
         #if activity == "scan":
         if actual_target.separation(req_target) > 0.05: # Half of a HPBW
-            activity_dset.append((csv_file["Timestamp"][csv_lower_index + i]/1000, "slew", "nominal"))
+            activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "slew", "nominal"))
             activity = "slew"
 
 print "Writing activity data..."
@@ -514,7 +555,7 @@ antenna_sensor_group["pos.actual-scan-elev"].attrs["units"] = "degrees CW from N
 
 print "Adding dummy 'label' data to the datafile."
 del h5file["Markup/labels"]
-label_dset = [(csv_file["Timestamp"][csv_lower_index], "avn_dummy", "nominal")]
+label_dset = [(csv_file["Timestamp"][pos_lower_index], "avn_dummy", "nominal")]
 label_dset = np.array(label_dset, dtype=[("timestamp","<f8"), ("label","S13"), ("status","S7")])
 h5file["Markup"].create_dataset("labels", data=label_dset)
 
