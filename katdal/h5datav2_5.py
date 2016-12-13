@@ -1,11 +1,5 @@
 """Data accessor class for HDF5 files produced by AVN DBE."""
 
-# TODO: For some reason, I need to use "h5.select()" before I "print h5" - the problem is with self.corr_products - though I can't find out where they're supposed to be assigned exactly. I'll work it out eventually but for now the workaround is simply to use "h5.select()" first.
-
-# TODO: Antenna list seems to be empty for some reason.
-
-# TODO: az, el, ra and dec don't work yet.
-
 # TODO: flags. Currently raises NotImplementedError
 
 # TODO: Obs script log currently returns empty.
@@ -58,11 +52,7 @@ SENSOR_ALIASES = {
 
 def _calc_azel(cache, name, ant="ant1"):
     """Calculate virtual (az, el) sensors from actual ones in sensor cache."""
-    # TODO: This version assumes the augmented datafiles, which haven't had a pointing model applied to them yet,
-    #       i.e. the only data that they've got to work with is the -pointm- datasets which are the ones delivered
-    #       to the ASCS, not the -scan- datasets from the KAT-7 convention. We don't have those yet.
     real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-scan-azim' if name.endswith('az') else 'pos.actual-scan-elev')
-    #real_sensor = 'Antennas/%s/%s' % (ant, 'pos.actual-pointm-azim' if name.endswith('az') else 'pos.actual-pointm-elev')
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
@@ -270,18 +260,19 @@ class H5DataV2_5(DataSet):
 
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
-        corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',') # ant1lant1l,ant1rant1r
+        corrprods = get_single_value(config_group["DBE"], "vis_ordering").split(',')
         if len(corrprods) != self._vis.shape[2]:
             raise BrokenFile('Number of data labels (containing expected antenna names) '
                              'received from h5 file (%d) differs from number of power products in data (%d)' %
                              (len(corrprods), self._vis.shape[2]))
         # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
-        corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
-                     ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
+        # This will change it into  "ant1lant1l,ant1rant1r" which katdal expects.
+        #corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
+        #             ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
         # Hardcode H, V for now as L, R not supported in katdal + scape yet
         corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
 
-        stokes_prods      = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
+        stokes_prods = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
             raise BrokenFile('Number of data labels (containing expected antenna names) '
                              'received from h5 file (%d) differs from number of Stokes products in data (%d)' %
@@ -327,7 +318,7 @@ class H5DataV2_5(DataSet):
             delay_model     = None
             pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
             #beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
-            beamwidth       = 0.1
+            beamwidth       = 1.03 # This isn't the beamwidth in degrees, but a scaling factor for the 'textbook' beamwidth. Don't quite know what it is for the Kuntunse antenna yet.
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
@@ -515,7 +506,7 @@ class H5DataV2_5(DataSet):
         """
         # Avoid storing reference to self in transform closure below, as this hinders garbage collection
         dump_period, time_offset = self.dump_period, self.time_offset
-        extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)  # TODO: Might need to look at this.
+        extract_time = LazyTransform('extract_time', lambda t, keep: t + 0.5 * dump_period + time_offset)
         return LazyIndexer(self._timestamps, keep=self._time_keep, transforms=[extract_time])
 
     def _vislike_indexer(self, dataset, extractor):
