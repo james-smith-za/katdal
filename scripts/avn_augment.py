@@ -247,34 +247,38 @@ else:
 
 print "\nChecking if sterile datasets were created by the RoachAcquisitionServer."
 
-antenna_pos_dataset_list = ["target",
-                            "activity",
-                            "pos.actual-dec",
-                            "pos.actual-ra",
-                            "pos.actual-scan-azim",
-                            "pos.actual-scan-elev",
-                            "pos.request-scan-azim",
-                            "pos.request-scan-elev",
-                            "pos.actual-pointm-azim",
-                            "pos.actual-pointm-elev",
-                            "pos.request-pointm-azim",
-                            "pos.request-pointm-elev",
-                            "pos.source-offset-azim",
-                            "pos.source-offset-elev",
-                            "motor-torque.az-master",
-                            "motor-torque.az-slave",
-                            "motor-torque.el-master",
-                            "motor-torque.el-slave"]
+sterile_dataset_list = ["target",
+                        "activity",
+                        "pos.actual-dec",
+                        "pos.actual-ra",
+                        "pos.actual-scan-azim",
+                        "pos.actual-scan-elev",
+                        "pos.request-scan-azim",
+                        "pos.request-scan-elev",
+                        "pos.actual-pointm-azim",
+                        "pos.actual-pointm-elev",
+                        "pos.request-pointm-azim",
+                        "pos.request-pointm-elev",
+                        "pos.source-offset-azim",
+                        "pos.source-offset-elev",
+                        "motor-torque.az-master",
+                        "motor-torque.az-slave",
+                        "motor-torque.el-master",
+                        "motor-torque.el-slave"]
 
 # TODO: At the moment the assumption is that the RoachAcquisitionServer is making sterile datasets here and they need to be removed.
-# This may at some stage not be true, and it would probably help to include some protection against re-augmenting a data file by accident.
-for dset_name in antenna_pos_dataset_list:
+for dset_name in sterile_dataset_list:
     try:
-        del sensor_group["Antennas/ant1/%s"%(dset_name)]
+        dset = sensor_group["Antennas/ant1/%s"%(dset_name)]
     except KeyError:
         print "No sterile %s dataset found."%(dset_name)
     else:
-        print "Sterile %s dataset removed."%(dset_name)
+        if dset.size == 0:
+            del dset # This just deletes the variable
+            del sensor_group["Antennas/ant1/%s"%(dset_name)] # This actually removes the dataset.
+            print "Sterile %s dataset removed."%(dset_name)
+        else:
+            print "Dataset %s nonzero size, not removed."%(dset_name)
 
 print "\nOpening %s for position sensor addition..."%(args[1])
 # Check to see that the files line up in at least some way.
@@ -452,104 +456,120 @@ for i in range(0, len(timestamp_array), 20): #Down-sample by a factor of 20
             activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "slew", "nominal"))
             activity = "slew"
 
+def write_dataset(dset_name, location, data, attributes):
+    """Write a dataset to the location."""
+    #TODO: This needs to be a bit refactored. I think it could be better.
+    response = ""
+    try:
+        dset = sensor_group["Antennas/ant1/%s"%(dset_name)]
+    except KeyError:
+        response += "No sterile %s dataset found. Adding augmented dataset.\n"%(dset_name)
+    else:
+        if dset.size != 0:
+            response += "Dataset %s nonzero size, not altered.\n"%(dset_name)
+            return response
+        else:
+            del dset  # This just deletes the variable
+            del sensor_group["Antennas/ant1/%s" % (dset_name)]  # This actually removes the dataset.
+            response += "Sterile %s dataset removed. Adding augmented dataset.\n" % (dset_name)
+
+            dset = location.create_dataset(dset_name, data=data)
+            for i in attributes:
+                dset.attrs[i] = attributes[i]
+            response += "%s dataset successfully added to file."%(dset_name)
+            return response
+
+
 print "Writing activity data..."
 activity_dset = np.array(activity_dset, dtype=[("timestamp", "<f8"), ("value", "S13"), ("status", "S7")])
-antenna_sensor_group.create_dataset("activity", data=activity_dset)
-antenna_sensor_group["activity"].attrs["description"] = "Synthesised antenna behaviour label"
-antenna_sensor_group["activity"].attrs["name"] = "activity"
-antenna_sensor_group["activity"].attrs["type"] = "discrete"
-antenna_sensor_group["activity"].attrs["units"] = ""
+print write_dataset("activity", antenna_sensor_group, data=activity_dset, attributes=
+              {"description":"Synthesised antenna behaviour label",
+               "name":       "activity",
+               "type":       "discrete",
+               "units":      ""})
 
 print "Writing requested azimuth..."
 azim_req_pointm_pos_dset = np.array(azim_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-pointm-azim", data=azim_req_pointm_pos_dset)
-antenna_sensor_group["pos.request-pointm-azim"].attrs["description"] = "Requested (by user or Field System) azimuth position."
-antenna_sensor_group["pos.request-pointm-azim"].attrs["name"] = "pos.request-pointm-azim"
-antenna_sensor_group["pos.request-pointm-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.request-pointm-azim"].attrs["units"] = "degrees CW from N"
-
-azim_req_scan_pos_dset = np.array(azim_req_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-scan-azim", data=azim_req_scan_pos_dset)
-antenna_sensor_group["pos.request-scan-azim"].attrs["description"] = "Requested (by user or Field System) azimuth position."
-antenna_sensor_group["pos.request-scan-azim"].attrs["name"] = "pos.request-scan-azim"
-antenna_sensor_group["pos.request-scan-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.request-scan-azim"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.request-pointm-azim", antenna_sensor_group, data=azim_req_pointm_pos_dset, attributes=
+              {"description": "Requested (by user or Field System) azimuth position.",
+               "name": "pos.request-pointm-azim",
+               "type": "float64",
+               "units": "degrees CW from N"})
 
 print "Writing desired azimuth..."
 azim_des_pointm_pos_dset = np.array(azim_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-azim", data=azim_des_pointm_pos_dset)
-antenna_sensor_group["pos.desired-pointm-azim"].attrs["description"] = "Intermediate azimuth position setpoint used by the ASCS."
-antenna_sensor_group["pos.desired-pointm-azim"].attrs["name"] = "pos.desired-pointm-azim"
-antenna_sensor_group["pos.desired-pointm-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.desired-pointm-azim"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.desired-pointm-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes=
+              {"description": "Intermediate azimuth position setpoint used by the ASCS.",
+               "name": "pos.desired-pointm-azim",
+               "type": "float64",
+               "units": "degrees CW from N"})
 
 azim_des_scan_pos_dset = np.array(azim_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-scan-azim", data=azim_des_scan_pos_dset)
-antenna_sensor_group["pos.desired-scan-azim"].attrs["description"] = "Intermediate azimuth position setpoint used by the ASCS."
-antenna_sensor_group["pos.desired-scan-azim"].attrs["name"] = "pos.desired-scan-azim"
-antenna_sensor_group["pos.desired-scan-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.desired-scan-azim"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.desired-scan-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes=
+              {"description": "Intermediate azimuth position setpoint used by the ASCS.",
+               "name": "pos.desired-scan-azim",
+               "type": "float64",
+               "units": "degrees CW from N"})
 
 print "Writing actual azimuth..."
 azim_act_pointm_pos_dset = np.array(azim_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-pointm-azim", data=azim_act_pointm_pos_dset)
-antenna_sensor_group["pos.actual-pointm-azim"].attrs["description"] = "Azimuth data returned by the encoder."
-antenna_sensor_group["pos.actual-pointm-azim"].attrs["name"] = "pos.actual-pointm-azim"
-antenna_sensor_group["pos.actual-pointm-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.actual-pointm-azim"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.actual-pointm-azim", antenna_sensor_group, data=azim_act_pointm_pos_dset, attributes=
+              {"description": "Azimuth data returned by the encoder.",
+               "name": "pos.actual-pointm-azim",
+               "type": "float64",
+               "units": "degrees CW from N"})
 
 azim_act_scan_pos_dset = np.array(azim_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-azim", data=azim_act_scan_pos_dset)
-antenna_sensor_group["pos.actual-scan-azim"].attrs["description"] = "Azimuth data returned by the encoder."
-antenna_sensor_group["pos.actual-scan-azim"].attrs["name"] = "pos.actual-scan-azim"
-antenna_sensor_group["pos.actual-scan-azim"].attrs["type"] = "float64"
-antenna_sensor_group["pos.actual-scan-azim"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.actual-scan-azim", antenna_sensor_group, data=azim_act_scan_pos_dset, attributes=
+              {"description": "Azimuth data returned by the encoder.",
+               "name": "pos.actual-scan-azim",
+               "type": "float64",
+               "units": "degrees CW from N"})
 
 print "Writing requested elevation..."
 elev_req_pointm_pos_dset = np.array(elev_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-pointm-elev", data=elev_req_pointm_pos_dset)
-antenna_sensor_group["pos.request-pointm-elev"].attrs["description"] = "Requested (by user or Field System) elevation position."
-antenna_sensor_group["pos.request-pointm-elev"].attrs["name"] = "pos.request-pointm-elev"
-antenna_sensor_group["pos.request-pointm-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.request-pointm-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.request-pointm-elev", antenna_sensor_group, data=elev_req_pointm_pos_dset, attributes=
+              {"description": "Requested (by user or Field System) elevation position.",
+               "name": "request-pointm-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
 elev_req_scan_pos_dset = np.array(elev_req_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.request-scan-elev", data=elev_req_scan_pos_dset)
-antenna_sensor_group["pos.request-scan-elev"].attrs["description"] = "Requested (by user or Field System) elevation position."
-antenna_sensor_group["pos.request-scan-elev"].attrs["name"] = "pos.request-scan-elev"
-antenna_sensor_group["pos.request-scan-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.request-scan-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.request-scan-elev", antenna_sensor_group, data=elev_req_scan_pos_dset, attributes=
+              {"description": "Requested (by user or Field System) elevation position.",
+               "name": "request-scan-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
 print "Writing desired elevation..."
 elev_des_pointm_pos_dset = np.array(elev_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-pointm-elev", data=elev_des_pointm_pos_dset)
-antenna_sensor_group["pos.desired-pointm-elev"].attrs["description"] = "Intermediate elevation position setpoint used by the ASCS."
-antenna_sensor_group["pos.desired-pointm-elev"].attrs["name"] = "pos.desired-pointm-elev"
-antenna_sensor_group["pos.desired-pointm-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.desired-pointm-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.desired-pointm-elev", antenna_sensor_group, data=elev_des_pointm_pos_dset, attributes=
+              {"description": "Requested (by user or Field System) elevation position.",
+               "name": "desired-pointm-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
 elev_des_scan_pos_dset = np.array(elev_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.desired-scan-elev", data=elev_des_scan_pos_dset)
-antenna_sensor_group["pos.desired-scan-elev"].attrs["description"] = "Intermediate elevation position setpoint used by the ASCS."
-antenna_sensor_group["pos.desired-scan-elev"].attrs["name"] = "pos.desired-scan-elev"
-antenna_sensor_group["pos.desired-scan-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.desired-scan-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.desired-scan-elev", antenna_sensor_group, data=elev_des_scan_pos_dset, attributes=
+              {"description": "Intermediate elevation position setpoint used by the ASCS.",
+               "name": "desired-scan-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
-# TODO: This needs to change back to 'pointm' at some point. I've fudged it into 'scan' so that scape will read it.
 print "Writing actual elevation..."
 elev_act_pointm_pos_dset = np.array(elev_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-pointm-elev", data=elev_act_pointm_pos_dset)
-antenna_sensor_group["pos.actual-pointm-elev"].attrs["description"] = "Elevation data returned by the encoder."
-antenna_sensor_group["pos.actual-pointm-elev"].attrs["name"] = "pos.actual-pointm-elev"
-antenna_sensor_group["pos.actual-pointm-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.actual-pointm-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.actual-pointm-elev", antenna_sensor_group, data=elev_act_pointm_pos_dset, attributes=
+              {"description": "Elevation data returned by the encoder.",
+               "name": "actual-pointm-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
 elev_act_scan_pos_dset = np.array(elev_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
-antenna_sensor_group.create_dataset("pos.actual-scan-elev", data=elev_act_scan_pos_dset)
-antenna_sensor_group["pos.actual-scan-elev"].attrs["description"] = "Elevation data returned by the encoder."
-antenna_sensor_group["pos.actual-scan-elev"].attrs["name"] = "pos.actual-scan-elev"
-antenna_sensor_group["pos.actual-scan-elev"].attrs["type"] = "float64"
-antenna_sensor_group["pos.actual-scan-elev"].attrs["units"] = "degrees CW from N"
+print write_dataset("pos.actual-scan-elev", antenna_sensor_group, data=elev_act_scan_pos_dset, attributes=
+              {"description": "Elevation data returned by the encoder.",
+               "name": "pos.actual-scan-elev",
+               "type": "float64",
+               "units": "degrees above horizontal"})
 
 ### Misc other things. ###
 
