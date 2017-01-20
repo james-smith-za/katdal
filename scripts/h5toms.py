@@ -20,11 +20,13 @@
 # 1 and 2) or MeerKAT HDF5 file (version 3) using the casapy table tools
 # in the ms_extra module (or pyrap/casacore if casapy is not available).
 
+import itertools
 import os
 import shutil
 import tarfile
 import optparse
 import time
+import pickle
 
 import numpy as np
 
@@ -42,6 +44,8 @@ parser = optparse.OptionParser(usage="%prog [options] <filename.h5> [<filename2.
                                description='Convert HDF5 file(s) to MeasurementSet')
 parser.add_option("-b", "--blank-ms", default="/var/kat/static/blank.ms",
                   help="Blank MS used as template (default=%default)")
+parser.add_option("-o", "--output-ms", default=None,
+                  help="Output Measurement Set")
 parser.add_option("-c", "--circular", action="store_true", default=False,
                   help="Produce quad circular polarisation. (RR, RL, LR, LL) "
                        "*** Currently just relabels the linear pols ****")
@@ -85,6 +89,8 @@ parser.add_option("--chanbin", type=int, default=0,
                   help="Bin width for channel averaging in channels, default is no averaging.")
 parser.add_option("--flagav", action="store_true", default=False,
                   help="If a single element in an averaging bin is flagged, flag the averaged bin.")
+parser.add_option("--caltables", action="store_true", default=False,
+                  help="Create calibration tables from gain solutions in the h5 file (if present).")
 
 (options, args) = parser.parse_args()
 
@@ -138,13 +144,22 @@ for win in range(len(h5.spectral_windows)):
     # Extract MS file per spectral window in H5 observation file
     print 'Extract MS for spw %d: central frequency %.2f MHz' % (win, (h5.spectral_windows[win]).centre_freq / 1e6)
     cen_freq = '%d' % int(h5.spectral_windows[win].centre_freq / 1e6)
-    basename = ('%s_%s' % (os.path.splitext(args[0])[0], cen_freq)) + \
-               ("." if len(args) == 1 else ".et_al.") + pol_for_name
+
+    # If no output MS filename supplied, infer the output filename
+    # from the first hdf5 file.
+    if options.output_ms is None:
+        basename = ('%s_%s' % (os.path.splitext(args[0])[0], cen_freq)) + \
+                   ("." if len(args) == 1 else ".et_al.") + pol_for_name
+        # create MS in current working directory
+        ms_name = basename + ".ms"
+    else:
+        ms_name = options.output_ms
+    # for the calibration table base name, use the ms name without the .ms extension, if there is a .ms extension
+    # otherwise use the ms name
+    caltable_basename = ms_name[:-3] if ms_name.lower().endswith('.ms') else ms_name
 
     h5.select(spw=win, scans='track', flags=options.flags)
 
-    # create MS in current working directory
-    ms_name = basename + ".ms"
     # The first step is to copy the blank template MS to our desired output (making sure it's not already there)
     if os.path.exists(ms_name):
         raise RuntimeError("MS '%s' already exists - please remove it before running this script" % (ms_name,))
@@ -271,6 +286,12 @@ for win in range(len(h5.spectral_windows)):
     print "Writing static meta data..."
     ms_extra.write_dict(ms_dict, ms_name, verbose=options.verbose)
 
+    # before resetting ms_dict, copy subset to caltable dictionary
+    if options.caltables:
+        caltable_dict = {}
+        caltable_dict['ANTENNA'] = ms_dict['ANTENNA']
+        caltable_dict['OBSERVATION'] = ms_dict['OBSERVATION']
+
     ms_dict = {}
     # increment scans sequentially in the ms
     scan_itr = 1
@@ -278,8 +299,47 @@ for win in range(len(h5.spectral_windows)):
     #  prepare to write main dict
     main_table = ms_extra.open_main(ms_name, verbose=options.verbose)
     corrprod_to_index = dict([(tuple(cp), ind) for cp, ind in zip(h5.corr_products, range(len(h5.corr_products)))])
+
+    # ==========================================
+    # Generate per-baseline antenna pairs and
+    # correlator product indices
+    # ==========================================
+
+    # Generate baseline antenna pairs
+    na = len(h5.ants)
+    ant1_index, ant2_index = np.triu_indices(na, 1 if options.no_auto else 0)
+    ant1 = [h5.ants[a1] for a1 in ant1_index]
+    ant2 = [h5.ants[a2] for a2 in ant2_index]
+
+    def _cp_index(a1, a2, pol):
+        """
+        Create individual correlator product index
+        from antenna pair and polarisation
+        """
+        a1 = "%s%s" % (a1.name, pol[0].lower())
+        a2 = "%s%s" % (a2.name, pol[1].lower())
+
+        return corrprod_to_index.get((a1, a2))
+
+    nbl = ant1_index.size
+    npol = len(pols_to_use)
+
+    # Create actual correlator product index
+    cp_index = np.asarray([_cp_index(a1, a2, p)
+                           for a1, a2 in itertools.izip(ant1, ant2)
+                           for p in pols_to_use])
+
+    # Identify missing correlator products
+    # Reshape for broadcast on time and frequency dimensions
+    missing_cp = np.logical_not([i is not None for i in cp_index])
+
+    # Zero any None indices, but use the above masks to reason
+    # about there existence in later code
+    cp_index[missing_cp] = 0
+
     field_names, field_centers, field_times = [], [], []
     obs_modes = ['UNKNOWN']
+    total_size_mb = 0.0
 
     for scan_ind, scan_state, target in h5.scans():
         s = time.time()
@@ -298,17 +358,10 @@ for win in range(len(h5.spectral_windows)):
             continue
         print "scan %3d (%4d samples) loaded. Target: '%s'. Writing to disk..." % (scan_ind, scan_len, target.name)
 
-        # load all data for this scan up front, as this improves disk throughput
-        scan_data = h5.vis[:]
-        # load the weights for this scan.
-        scan_weight_data = h5.weights[:]
-        # load flags selected from 'options.flags' for this scan
-        scan_flag_data = h5.flags[:]
-
         # Get the average dump time for this scan (equal to scan length if the dump period is longer than a scan)
         dump_time_width = min(time_av, scan_len * h5.dump_period)
 
-        sz_mb = 0.0
+        scan_size_mb = 0.0
         # Get UTC timestamps
         utc_seconds = h5.timestamps[:]
         # Update field lists if this is a new target
@@ -335,87 +388,132 @@ for win in range(len(h5.spectral_windows)):
         # get state_id from obs_modes list if it is in the list, else 0 'UNKNOWN'
         state_id = obs_modes.index(obs_tag) if obs_tag in obs_modes else 0
 
-        for ant1_index, ant1 in enumerate(h5.ants):
-            for ant2_index, ant2 in enumerate(h5.ants):
-                if ant2_index < ant1_index:
-                    continue
-                if options.no_auto and (ant2_index == ant1_index):
-                    continue
-                polprods = [("%s%s" % (ant1.name, p[0].lower()),
-                             "%s%s" % (ant2.name, p[1].lower())) for p in pols_to_use]
+        # Iterate over time in some multiple of dump average
+        ntime = utc_seconds.size
+        tsize = dump_av
+        ntime_av = 0
 
-                pol_data, flag_pol_data, weight_pol_data = [], [], []
+        for ltime in xrange(0, ntime - tsize + 1, tsize):
 
-                for p in polprods:
-                    # cable_delay = delays[p[1][-1]][ant2.name] - delays[p[0][-1]][ant1.name]
-                    # cable delays specific to pol type
-                    cp_index = corrprod_to_index.get(p)
-                    vis_data = scan_data[:, :, cp_index] if cp_index is not None else \
-                        np.zeros(h5.shape[:2], dtype=np.complex64)
-                    weight_data = scan_weight_data[:, :, cp_index] if cp_index is not None else \
-                        np.ones(h5.shape[:2], dtype=np.float32)
-                    flag_data = scan_flag_data[:, :, cp_index] if cp_index is not None else \
-                        np.zeros(h5.shape[:2], dtype=np.bool)
-                    # if options.stop_w:
-                    #    # Result of delay model in turns of phase. This is now
-                    #    # frequency dependent so has shape (tstamps, channels)
-                    #    turns = np.outer((h5.w[:, cp_index] / katpoint.lightspeed) - cable_delay, h5.channel_freqs)
-                    #    vis_data *= np.exp(-2j * np.pi * turns)
+            utime = ltime + tsize
+            tdiff = utime - ltime
+            out_freqs = h5.channel_freqs
+            nchan = out_freqs.size
 
-                    out_utc = utc_seconds
-                    out_freqs = h5.channel_freqs
+            # load all visibility, weight and flag data
+            # for this scan's timestamps.
+            # Ordered (ntime, nchan, nbl*npol)
+            scan_data = h5.vis[ltime:utime, :, :]
+            scan_weight_data = h5.weights[ltime:utime, :, :]
+            scan_flag_data = h5.flags[ltime:utime, :, :]
 
-                    # Overwrite the input visibilities with averaged visibilities,flags,weights,timestamps,channel freqs
-                    if average_data:
-                        vis_data, weight_data, flag_data, out_utc, out_freqs = \
-                            averager.average_visibilities(vis_data, weight_data, flag_data, out_utc, out_freqs,
-                                                          timeav=dump_av, chanav=chan_av, flagav=options.flagav)
+            # Select correlator products
+            # cp_index could be used above when the LazyIndexer
+            # supports advanced integer indices
+            vis_data = scan_data[:, :, cp_index]
 
-                    pol_data.append(vis_data)
-                    weight_pol_data.append(weight_data)
-                    flag_pol_data.append(flag_data)
+            weight_data = scan_weight_data[:, :, cp_index]
+            flag_data = scan_flag_data[:, :, cp_index]
 
-                vis_data = np.dstack(pol_data)
-                weight_data = np.dstack(weight_pol_data)
-                flag_data = np.dstack(flag_pol_data)
+            # Zero and flag any missing correlator products
+            vis_data[:, :, missing_cp] = 0 + 0j
+            weight_data[:, :, missing_cp] = 0
+            flag_data[:, :, missing_cp] = True
 
-                model_data = None
-                corrected_data = None
-                if options.model_data:
-                    # unity intensity zero phase model data set, same shape as vis_data
-                    model_data = np.ones(vis_data.shape, dtype=np.complex64)
-                    # corrected data set copied from vis_data
-                    corrected_data = vis_data
+            out_utc = utc_seconds[ltime:utime]
 
-                uvw_coordinates = np.array(target.uvw(ant2, timestamp=out_utc, antenna=ant1))
+            # Overwrite the input visibilities with averaged visibilities,flags,weights,timestamps,channel freqs
+            if average_data:
+                vis_data, weight_data, flag_data, out_utc, out_freqs = \
+                    averager.average_visibilities(vis_data, weight_data, flag_data, out_utc, out_freqs,
+                                                  timeav=dump_av, chanav=chan_av, flagav=options.flagav)
 
-                # Convert averaged UTC timestamps to MJD seconds.
-                out_mjd = [katpoint.Timestamp(time_utc).to_mjd() * 24 * 60 * 60 for time_utc in out_utc]
+                # Infer new time and channel dimensions from averaged data
+                tdiff, nchan = vis_data.shape[0], vis_data.shape[1]
 
-                # Increment the filesize.
-                sz_mb += vis_data.dtype.itemsize * vis_data.size / (1024.0 * 1024.0)
-                sz_mb += weight_data.dtype.itemsize * weight_data.size / (1024.0 * 1024.0)
-                sz_mb += flag_data.dtype.itemsize * flag_data.size / (1024.0 * 1024.0)
+            # Increment the number of averaged dumps
+            ntime_av += tdiff
 
-                if options.model_data:
-                    sz_mb += model_data.dtype.itemsize * model_data.size / (1024.0 * 1024.0)
-                    sz_mb += corrected_data.dtype.itemsize * corrected_data.size / (1024.0 * 1024.0)
+            def _separate_baselines_and_pols(array):
+                """
+                (1) Separate correlator product into baseline and polarisation,
+                (2) rotate baseline between time and channel,
+                (3) group time and baseline together
+                """
+                S = array.shape[:2] + (nbl, npol)
+                return array.reshape(S).transpose(0, 2, 1, 3).reshape(-1, nchan, npol)
 
-                # write the data to the ms.
-                main_dict = ms_extra.populate_main_dict(uvw_coordinates, vis_data, flag_data,
-                                                        out_mjd, ant1_index, ant2_index,
-                                                        dump_time_width, field_id, state_id,
-                                                        scan_itr, model_data, corrected_data)
-                ms_extra.write_rows(main_table, main_dict, verbose=options.verbose)
+            def _create_uvw(a1, a2, times):
+                """
+                Return a (ntime, 3) array of UVW coordinates for baseline
+                defined by a1 and a2
+                """
+                uvw = target.uvw(a2, timestamp=times, antenna=a1)
+                return np.asarray(uvw).T
+
+            # Massage visibility, weight and flag data from
+            # (ntime, nchan, nbl*npol) ordering to (ntime*nbl, nchan, npol)
+            vis_data, weight_data, flag_data = (_separate_baselines_and_pols(a)
+                                                for a in (vis_data, weight_data, flag_data))
+
+            # Iterate through baselines, computing UVW coordinates
+            # for a chunk of timesteps
+            uvw_coordinates = np.concatenate([
+                _create_uvw(a1, a2, out_utc)[:, np.newaxis, :]
+                for a1, a2 in itertools.izip(ant1, ant2)], axis=1).reshape(-1, 3)
+
+            # Convert averaged UTC timestamps to MJD seconds.
+            # Blow time up to (ntime*nbl,)
+            out_mjd = np.asarray([katpoint.Timestamp(time_utc).to_mjd() * 24 * 60 * 60
+                                  for time_utc in out_utc])
+
+            out_mjd = np.broadcast_to(out_mjd[:, np.newaxis], (tdiff, nbl)).ravel()
+
+            # Repeat antenna indices to (ntime*nbl,)
+            a1 = np.broadcast_to(ant1_index[np.newaxis, :], (tdiff, nbl)).ravel()
+            a2 = np.broadcast_to(ant2_index[np.newaxis, :], (tdiff, nbl)).ravel()
+
+            # Blow field ID up to (ntime*nbl,)
+            big_field_id = np.full((tdiff * nbl,), field_id, dtype=np.int32)
+            big_state_id = np.full((tdiff * nbl,), state_id, dtype=np.int32)
+            big_scan_itr = np.full((tdiff * nbl,), scan_itr, dtype=np.int32)
+
+            # Setup model_data and corrected_data if required
+            model_data = None
+            corrected_data = None
+
+            if options.model_data:
+                # unity intensity zero phase model data set, same shape as vis_data
+                model_data = np.ones(vis_data.shape, dtype=np.complex64)
+                # corrected data set copied from vis_data
+                corrected_data = vis_data
+
+            # write the data to the ms.
+            main_dict = ms_extra.populate_main_dict(uvw_coordinates, vis_data, flag_data,
+                                                    out_mjd, a1, a2,
+                                                    dump_time_width, big_field_id, big_state_id,
+                                                    big_scan_itr, model_data, corrected_data)
+            ms_extra.write_rows(main_table, main_dict, verbose=options.verbose)
+
+            # Increment the filesize.
+            scan_size_mb += vis_data.dtype.itemsize * vis_data.size / (1024.0 * 1024.0)
+            scan_size_mb += weight_data.dtype.itemsize * weight_data.size / (1024.0 * 1024.0)
+            scan_size_mb += flag_data.dtype.itemsize * flag_data.size / (1024.0 * 1024.0)
+
+            if options.model_data:
+                scan_size_mb += model_data.dtype.itemsize * model_data.size / (1024.0 * 1024.0)
+                scan_size_mb += corrected_data.dtype.itemsize * corrected_data.size / (1024.0 * 1024.0)
 
         s1 = time.time() - s
-        if average_data and np.shape(utc_seconds)[0] != np.shape(out_utc)[0]:
+        if average_data and utc_seconds.shape != ntime_av:
             print "Averaged %s x %s second dumps to %s x %s second dumps" % \
-                  (np.shape(utc_seconds)[0], h5.dump_period, np.shape(out_utc)[0], dump_time_width)
-        print "Wrote scan data (%f MB) in %f s (%f MBps)\n" % (sz_mb, s1, sz_mb / s1)
+                  (np.shape(utc_seconds)[0], h5.dump_period, ntime_av, dump_time_width)
+        print "Wrote scan data (%f MB) in %f s (%f MBps)\n" % (scan_size_mb, s1, scan_size_mb / s1)
         scan_itr += 1
-    main_table.close()
-    # done writing main table
+        total_size_mb += scan_size_mb
+
+    if total_size_mb == 0.0:
+        raise RuntimeError("No usable data found in HDF5 file (pick another reference antenna, maybe?)")
 
     # Remove spaces from source names, unless otherwise specified
     field_names = [f.replace(' ', '') for f in field_names] if not options.keep_spaces else field_names
@@ -434,3 +532,138 @@ for win in range(len(h5.spectral_windows)):
         tar = tarfile.open('%s.tar' % (ms_name,), 'w')
         tar.add(ms_name, arcname=os.path.basename(ms_name))
         tar.close()
+
+    # --------------------------------------
+    # Now write calibration product tables if required
+    # Open first HDF5 file in the list to extract TelescopeState parameters from
+    #   (can't extract telstate params from contatenated katdal file as it uses the hdf5 file directly)
+    first_h5 = katdal.open(args[0], ref_ant=options.ref_ant)
+
+    if options.caltables:
+        # copy extra subtable dictionary values necessary for caltable
+        caltable_dict['SPECTRAL_WINDOW'] = ms_dict['SPECTRAL_WINDOW']
+        caltable_dict['FIELD'] = ms_dict['FIELD']
+
+        solution_types = ['G', 'B', 'K']
+        ms_soltype_lookup = {'G': 'G Jones', 'B': 'B Jones', 'K': 'K Jones'}
+
+        print "\nWriting calibration solution tables to disk...."
+        if 'TelescopeState' not in first_h5.file.keys():
+            print " No TelescopeState in first H5 file. Can't create solution tables.\n"
+        else:
+            # first get solution antenna ordering
+            #   newer h5 files have the cal antlist as a sensor
+            if 'cal_antlist' in first_h5.file['TelescopeState'].keys():
+                a0 = first_h5.file['TelescopeState']['cal_antlist'].value
+                antlist = pickle.loads(a0[0][1])
+            #   older h5 files have the cal antlist as an attribute
+            elif 'cal_antlist' in first_h5.file['TelescopeState'].attrs.keys():
+                antlist = np.safe_eval(first_h5.file['TelescopeState'].attrs['cal_antlist'])
+            else:
+                print " No calibration antenna ordering in first H5 file. Can't create solution tables.\n"
+                continue
+            antlist_indices = range(len(antlist))
+
+            # for each solution type in the h5 file, create a table
+            for sol in solution_types:
+                caltable_name = '{0}.{1}'.format(caltable_basename, sol)
+                sol_name = 'cal_product_{0}'.format(sol,)
+
+                if sol_name in first_h5.file['TelescopeState'].keys():
+                    print ' - creating {0} solution table: {1}\n'.format(sol, caltable_name)
+
+                    # get solution values from the h5 file
+                    solutions = first_h5.file['TelescopeState'][sol_name].value
+                    soltimes, solvals = [], []
+                    for t, s in solutions:
+                        soltimes.append(t)
+                        solvals.append(pickle.loads(s))
+                    solvals = np.array(solvals)
+
+                    # convert averaged UTC timestamps to MJD seconds.
+                    sol_mjd = np.array([katpoint.Timestamp(time_utc).to_mjd() * 24 * 60 * 60 for time_utc in soltimes])
+
+                    # determine solution characteristics
+                    if len(solvals.shape) == 4:
+                        ntimes, nchans, npols, nants = solvals.shape
+                    else:
+                        ntimes, npols, nants = solvals.shape
+                        nchans = 1
+                        solvals = solvals.reshape(ntimes, nchans, npols, nants)
+
+                    # create calibration solution measurement set
+                    caltable_desc = ms_extra.caltable_desc_float if sol == 'K' else ms_extra.caltable_desc_complex
+                    caltable = ms_extra.open_table(caltable_name, tabledesc=caltable_desc)
+
+                    # add other keywords for main table
+                    if sol == 'K':
+                        caltable.putkeyword('ParType', 'Float')
+                    else:
+                        caltable.putkeyword('ParType', 'Complex')
+                    caltable.putkeyword('MSName', ms_name)
+                    caltable.putkeyword('VisCal', ms_soltype_lookup[sol])
+                    caltable.putkeyword('PolBasis', 'unknown')
+                    # add necessary units
+                    caltable.putcolkeywords('TIME', {'MEASINFO': {'Ref': 'UTC', 'type': 'epoch'},
+                                                     'QuantumUnits': ['s']})
+                    caltable.putcolkeywords('INTERVAL', {'QuantumUnits': ['s']})
+                    # specify that this is a calibration table
+                    caltable.putinfo({'readme': '', 'subType': ms_soltype_lookup[sol], 'type': 'Calibration'})
+
+                    # get the solution data to write to the main table
+                    solutions_to_write = solvals.transpose(0, 3, 1, 2).reshape(ntimes * nants, nchans, npols)
+
+                    # MS's store delays in nanoseconds
+                    if sol == 'K':
+                        solutions_to_write = 1e9 * solutions_to_write
+
+                    times_to_write = np.repeat(sol_mjd, nants)
+                    antennas_to_write = np.tile(antlist_indices, ntimes)
+                    # just mock up the scans -- this doesnt actually correspond to scans in the data
+                    scans_to_write = np.repeat(range(len(sol_mjd)), nants)
+                    # write the main table
+                    main_cal_dict = ms_extra.populate_caltable_main_dict(times_to_write, solutions_to_write,
+                                                                         antennas_to_write, scans_to_write)
+                    ms_extra.write_rows(caltable, main_cal_dict, verbose=options.verbose)
+
+                    # create and write subtables
+                    subtables = ['OBSERVATION', 'ANTENNA', 'FIELD', 'SPECTRAL_WINDOW', 'HISTORY']
+                    subtable_key = [(os.path.join(caltable.name(), st)) for st in subtables]
+
+                    # Add subtable keywords and create subtables
+                    # ------------------------------------------------------------------------------
+                    # # this gives an error in casapy:
+                    # # *** Error *** MSObservation(const Table &) - table is not a valid MSObservation
+                    # for subtable, subtable_location in zip(subtables, subtable_key)
+                    #     ms_extra.open_table(subtable_location, tabledesc=ms_extra.ms_desc[subtable])
+                    #     caltable.putkeyword(subtable, 'Table: {0}'.format(subtable_location))
+                    # # write the static info for the table
+                    # ms_extra.write_dict(caltable_dict, caltable.name(), verbose=options.verbose)
+                    # ------------------------------------------------------------------------------
+                    # instead try just copying the main table subtables
+                    #   this works to plot the data casapy, but the solutions still can't be applied in casapy...
+                    for subtable, subtable_location in zip(subtables, subtable_key):
+                        main_subtable = ms_extra.open_table(os.path.join(main_table.name(), subtable))
+                        main_subtable.copy(subtable_location, deep=True)
+                        caltable.putkeyword(subtable, 'Table: {0}'.format(subtable_location))
+                        if subtable == 'ANTENNA':
+                            caltable.putkeyword('NAME', antlist)
+                            caltable.putkeyword('STATION', antlist)
+                    if sol != 'B':
+                        spw_table = ms_extra.open_table(os.path.join(caltable.name(), 'SPECTRAL_WINDOW'))
+                        spw_table.removerows(spw_table.rownumbers())
+                        cen_index = len(out_freqs) // 2
+                        # the delay values in the cal pipeline are calculated relative to frequency 0
+                        ref_freq = 0.0 if sol == 'K' else None
+                        spw_dict = {'SPECTRAL_WINDOW':
+                                    ms_extra.populate_spectral_window_dict(np.atleast_1d(out_freqs[cen_index]),
+                                                                           np.atleast_1d(channel_freq_width),
+                                                                           ref_freq=ref_freq)}
+                        ms_extra.write_dict(spw_dict, caltable.name(), verbose=options.verbose)
+
+                    # done with this caltable
+                    caltable.flush()
+                    caltable.close()
+
+    main_table.close()
+    # done writing main table

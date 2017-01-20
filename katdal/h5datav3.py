@@ -17,10 +17,15 @@
 """Data accessor class for HDF5 files produced by RTS correlator."""
 
 import logging
+from collections import Counter
 
 import numpy as np
 import h5py
 import katpoint
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 from .dataset import (DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow,
                       DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target)
@@ -366,7 +371,7 @@ class H5DataV3(DataSet):
         ants = sorted(ants)
         cam_ants = set(ant.name for ant in ants)
         # Original list of correlation products as pairs of input labels
-        corrprods = cbf_group.attrs['bls_ordering']
+        corrprods = self._get_corrprods(f)
         # Find names of all antennas with associated correlator data
         cbf_ants = set([cp[0][:-1] for cp in corrprods] + [cp[1][:-1] for cp in corrprods])
         # By default, only pick antennas that were in use by the script
@@ -374,19 +379,6 @@ class H5DataV3(DataSet):
         # Otherwise fall back to the list of antennas common to CAM and CBF
         obs_ants = obs_ants.split(',') if obs_ants else list(cam_ants & cbf_ants)
         self.ref_ant = obs_ants[0] if not ref_ant else ref_ant
-        # Populate antenna -> receiver mapping
-        band_override = band
-        for ant in cam_ants:
-            if band_override is None:
-                band_sensor = 'Antennas/%s/ap_indexer_position' % (ant,)
-                band = self.sensor[band_sensor][0] if band_sensor in self.sensor else ''
-            rx_sensor = 'Antennas/%s/rsc_rx%s_serial_number' % (ant, band)
-            rx_serial = self.sensor[rx_sensor][0] if rx_sensor in self.sensor else 0
-            if band:
-                self.receivers[ant] = '%s.%d' % (band, rx_serial)
-        # Work around early RTS correlator bug by re-ordering labels
-        if rotate_bls:
-            corrprods = corrprods[range(1, len(corrprods)) + [0]]
 
         if len(corrprods) != self._vis.shape[2]:
             # Apply k7_capture baseline mask after the fact, in the hope that it fixes correlation product mislabelling
@@ -407,9 +399,80 @@ class H5DataV3(DataSet):
 
         # ------ Extract spectral windows / frequencies ------
 
-        # The centre frequency is now in the domain of the CBF but can be overridden
-        # XXX Cater for other bands / receivers, as well as future narrowband mode, at some stage
-        centre_freq = cbf_group.attrs['center_freq'] if centre_freq is None else centre_freq
+        # Get the receiver band identity ('l', 's', 'u', 'x') if not overridden
+        if not band:
+            if 'TelescopeState' in f.file:
+                # Newer RTS, AR1 and beyond use the subarray band attribute / sensor
+                try:
+                    band = f.file['TelescopeState'].attrs['sub_band']
+                    # The telstate attributes were serialised via str() until 2016-11-29
+                    if band not in ('l', 's', 'u', 'x'):
+                        band = pickle.loads(band)
+                except (KeyError, pickle.UnpicklingError):
+                    try:
+                        band = self.sensor['TelescopeState/sub_band'][-1]
+                    except KeyError:
+                        band = ''
+            else:
+                # Fallback for the original RTS before 2016-07-21 (not reliable)
+                # Find the most common valid indexer position in the subarray
+                positions = Counter()
+                for ant in cam_ants:
+                    pos_sensor = 'Antennas/%s/ap_indexer_position' % (ant,)
+                    try:
+                        pos = self.sensor[pos_sensor][-1]
+                    except KeyError:
+                        pos = ''
+                    if pos in ('l', 's', 'u', 'x'):
+                        positions[pos] += 1
+                try:
+                    band = positions.most_common(1)[0][0]
+                except IndexError:
+                    # An empty counter -> no valid positions were found
+                    band = ''
+                else:
+                    logger.warning('Guessed receiver band from most common '
+                                   'indexer position - this is not reliable!')
+        if not band:
+            logger.warning('Could not figure out receiver band - '
+                           'please provide it via band parameter')
+        # Populate antenna -> receiver mapping
+        for ant in cam_ants:
+            rx_sensor = 'Antennas/%s/rsc_rx%s_serial_number' % (ant, band)
+            rx_serial = self.sensor[rx_sensor][0] if rx_sensor in self.sensor else 0
+            if band:
+                self.receivers[ant] = '%s.%d' % (band, rx_serial)
+        # Mapping describing current receiver information on MeerKAT
+        # XXX Update this as new receivers come online
+        rx_table = {
+            # Standard L-band receiver
+            'l': dict(band='L', centre_freq=1284e6, sideband=1),
+            # Custom UHF receiver (real receiver + L-band digitiser, flipped spectrum)
+            'u': dict(band='UHF', centre_freq=428e6, sideband=-1),
+            # Custom Ku receiver for RTS
+            'x': dict(band='Ku', sideband=1),
+        }
+        spw_params = rx_table.get(band, dict(band='', sideband=1))
+        # Cater for receivers with mixers
+        if spw_params['band'] == 'Ku':
+            if 'Ancillary/siggen_ku_frequency' in self.sensor:
+                siggen_freq = self.sensor['Ancillary/siggen_ku_frequency'][0]
+            elif 'TelescopeState' in f.file:
+                try:
+                    siggen_freq = self.sensor['TelescopeState/anc_siggen_ku_frequency'][0]
+                except KeyError:
+                    siggen_freq = 0.0
+            if siggen_freq:
+                spw_params['centre_freq'] = 100. * siggen_freq + 1284e6
+        # Override centre frequency if provided
+        if centre_freq:
+            spw_params['centre_freq'] = centre_freq
+        if 'centre_freq' not in spw_params:
+            # Choose something really obviously wrong but don't prevent opening the file
+            spw_params['centre_freq'] = 0.0
+            logger.warning('Could not figure out centre frequency, setting it to 0 Hz - '
+                           'please provide it via centre_freq parameter')
+        # XXX Cater for future narrowband mode, at some stage
         num_chans = cbf_group.attrs['n_chans']
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from correlator '
@@ -419,13 +482,13 @@ class H5DataV3(DataSet):
         if bandwidth == 857152196.0:
             logger.warning('Worked around CBF bandwidth bug (857.152 MHz -> 856.000 MHz)')
             bandwidth = 856000000.0
-        channel_width = bandwidth / num_chans
+        spw_params['num_chans'] = num_chans
+        spw_params['channel_width'] = bandwidth / num_chans
         # The data product is set by the script or passed to it via schedule block
-        product = self.obs_params.get('product', 'unknown')
-
+        spw_params['product'] = self.obs_params.get('product', '')
         # We only expect a single spectral window within a single v3 file,
         # as changing the centre freq is like changing the CBF mode
-        self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, product, sideband=1)]
+        self.spectral_windows = [SpectralWindow(**spw_params)]
         self.sensor['Observation/spw'] = CategoricalData(self.spectral_windows, [0, num_dumps])
         self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
 
@@ -482,6 +545,40 @@ class H5DataV3(DataSet):
         self.select(spw=0, subarray=0, ants=obs_ants)
 
     @staticmethod
+    def _get_corrprods(f, rotate_bls=False):
+        """Load the correlation products list from an open file
+
+        Parameters
+        ----------
+        f : :class:`h5py.File`
+            Open HDF5 file
+        rotate_bls : {False, True}, optional
+            Rotate baseline label list to work around early RTS correlator bug
+
+        Returns
+        -------
+        corrprods : list
+            list of pairs of input labels
+        """
+        try:
+            # If sdp_l0_bls_ordering is present, it should be used in preference
+            # to cbf_bls_ordering.
+            corrprods = pickle.loads(f['TelescopeState'].attrs['sdp_l0_bls_ordering'])
+        except KeyError:
+            # Prior to about Nov 2016, ingest would rewrite cbf_bls_ordering in
+            # place.
+            tm_group = f['TelescopeModel']
+            # Pick first group with appropriate class as CBF
+            cbfs = [comp for comp in tm_group
+                    if tm_group[comp].attrs.get('class') == 'CorrelatorBeamformer']
+            cbf_group = tm_group[cbfs[0]]
+            corrprods = cbf_group.attrs['bls_ordering']
+            # Work around early RTS correlator bug by re-ordering labels
+            if rotate_bls:
+                corrprods = corrprods[range(1, len(corrprods)) + [0]]
+        return corrprods
+
+    @staticmethod
     def _open(filename, mode='r'):
         """Open file and do basic version sanity check."""
         f = h5py.File(filename, mode)
@@ -509,10 +606,6 @@ class H5DataV3(DataSet):
         f, version = H5DataV3._open(filename)
         obs_params = {}
         tm_group = f['TelescopeModel']
-        # Pick first group with appropriate class as CBF
-        cbfs = [comp for comp in tm_group
-                if tm_group[comp].attrs.get('class') == 'CorrelatorBeamformer']
-        cbf_group = tm_group[cbfs[0]]
         ants = []
         for name in tm_group:
             if tm_group[name].attrs.get('class') != 'AntennaPositioner':
@@ -527,7 +620,7 @@ class H5DataV3(DataSet):
             ants.append(katpoint.Antenna(ant_description))
         cam_ants = set(ant.name for ant in ants)
         # Original list of correlation products as pairs of input labels
-        corrprods = cbf_group.attrs['bls_ordering']
+        corrprods = H5DataV3._get_corrprods(f)
         # Find names of all antennas with associated correlator data
         cbf_ants = set([cp[0][:-1] for cp in corrprods] + [cp[1][:-1] for cp in corrprods])
         # By default, only pick antennas that were in use by the script
