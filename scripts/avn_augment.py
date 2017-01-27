@@ -110,16 +110,14 @@ def write_dataset(dset_name, location, data, attributes):
             response += "Dataset %s already exists, nonzero size, not altered. Was this file previously augmented?\n" % (
             dset_name)
             return response
-        else:
-            del dset  # This just deletes the variable
-            del sensor_group["Antennas/ant1/%s" % (dset_name)]  # This actually removes the dataset.
-            response += "Sterile %s dataset removed. Adding augmented dataset.\n" % (dset_name)
+        del sensor_group["Antennas/ant1/%s" % (dset_name)]  # This actually removes the dataset.
+        response += "Sterile %s dataset removed. Adding augmented dataset.\n" % (dset_name)
 
-            dset = location.create_dataset(dset_name, data=data)
-            for i in attributes:
-                dset.attrs[i] = attributes[i]
-            response += "%s dataset successfully added to file." % (dset_name)
-            return response
+    dset = location.create_dataset(dset_name, data=data)
+    for i in attributes:
+        dset.attrs[i] = attributes[i]
+    response += "%s dataset successfully added to file." % (dset_name)
+    return response
 
 
 print "Opening files for augmenting..."
@@ -224,27 +222,27 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     windspeed_array     = np.array(windspeed_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
     winddirection_array = np.array(winddirection_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
 
-    write_dataset("air.temperature", enviro_group, data=temperature_array, attributes=
+    print write_dataset("air.temperature", enviro_group, data=temperature_array, attributes=
                   {"description": "Air temperature",
                    "name":        "air.temperature",
                    "type":        "float64",
                    "units":       "degC"})
-    write_dataset("air.pressure", enviro_group, data=pressure_array, attributes=
+    print write_dataset("air.pressure", enviro_group, data=pressure_array, attributes=
                   {"description": "Air pressure",
                    "name":        "air.pressure",
                    "type":        "float64",
                    "units":       "mbar"})
-    write_dataset("relative.humidity", enviro_group, data=humidity_array, attributes=
+    print write_dataset("relative.humidity", enviro_group, data=humidity_array, attributes=
                   {"description": "Relative humidity",
                    "name":        "relative.humidity",
                    "type":        "float64",
                    "units":       "percent"})
-    write_dataset("wind.speed", enviro_group, data=windspeed_array, attributes=
+    print write_dataset("wind.speed", enviro_group, data=windspeed_array, attributes=
                   {"description": "Wind speed",
                    "name":        "wind.speed",
                    "type":        "float64",
                    "units":       "m/s"})
-    write_dataset("wind.direction", enviro_group, data=winddirection_array, attributes=
+    print write_dataset("wind.direction", enviro_group, data=winddirection_array, attributes=
                   {"description": "Wind direction",
                    "name":        "wind.direction",
                    "type":        "float64",
@@ -369,11 +367,11 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     target_dset.append((float(csv_file["Timestamp"][pos_lower_index]) / 1000.0, target, "nominal"))
     print "Writing target data..."
     target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
-    antenna_sensor_group.create_dataset("target", data=target_dset)
-    antenna_sensor_group["target"].attrs["description"] = "Current target"
-    antenna_sensor_group["target"].attrs["name"] = "target"
-    antenna_sensor_group["target"].attrs["type"] = "string"
-    antenna_sensor_group["target"].attrs["units"] = ""
+    print write_dataset("target", antenna_sensor_group, data=target_dset, attributes=
+                        {"description": "Current target",
+                         "name":        "target",
+                         "type":        "string",
+                         "units":       ""})
 
     print "Reading position data from csv file into memory..."
     activity_dset.append((csv_file["Timestamp"][pos_lower_index] / 1000.0, "slew", "nominal"))

@@ -334,13 +334,11 @@ class H5DataV2_5(DataSet):
         # TODO: fix hardcoding
         #centre_freq = self.sensor.get('RFE/center-frequency-hz')
         centre_freq = 6.67e9
-        #num_chans = get_single_value(config_group['DataFile'], 'n_chans')
-        num_chans = 1024
-        #if num_chans != self._vis.shape[1]:
-        #    raise BrokenFile('Number of channels received from DBE '
-        #                     '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
-        #bandwidth = get_single_value(config_group['DataFile'], 'bandwidth')
-        bandwidth = 400e6
+        num_chans = get_single_value(config_group['DBE'], 'n_chans')
+        if num_chans != self._vis.shape[1]:
+            raise BrokenFile('Number of channels received from DBE '
+                             '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
+        bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
         channel_width = bandwidth / num_chans
 
         # Our RF into the ROACH will always be spectrally inverted, but since we're sampling
