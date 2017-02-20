@@ -303,24 +303,27 @@ class H5DataV2_5(DataSet):
 
         ants = []
         # TODO This is hard-coded for the Ghana dish. Fix! At the moment, the acquisition server hasn't been updated to read them properly. Something is funky with the way that the antennas are printed though, at the moment they kind of aren't.
-        for antenna in config_group["Antennas"]:
+        #for antenna in config_group["Antennas"]:
             #name           = config_group["Antennas"][antenna].attrs['name']
-            name            = "ant1"
+            #name            = "ant1"
             #latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            latitude        = 5.7515983 * np.pi / 180
+            #latitude        = 5.7515983 * np.pi / 180
             #longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            longitude       = -0.3056904  * np.pi / 180
+            #longitude       = -0.3056904  * np.pi / 180
             #altitude       = config_group["Antennas"][antenna].attrs['altitude']
-            altitude        = 116
+            #altitude        = 116
             #diameter       = config_group["Antennas"][antenna].attrs['diameter']
-            diameter        = 32
+            #diameter        = 32
             #delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
-            delay_model     = None
-            pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            #delay_model     = None
+            #pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
             #beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
-            beamwidth       = 1.03 # This isn't the beamwidth in degrees, but a scaling factor for the 'textbook' beamwidth. Don't quite know what it is for the Kuntunse antenna yet.
+            #beamwidth       = 1.2 # This isn't the beamwidth in degrees, but a scaling factor for the 'textbook' beamwidth. Don't quite know what it is for the Kuntunse antenna yet.
 
-            ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
+            #ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
+
+        ants = [katpoint.Antenna(config_group['Antennas'][name].attrs['description'])
+                for name in config_group['Antennas']]
 
         self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
@@ -331,15 +334,23 @@ class H5DataV2_5(DataSet):
             self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
 
         # ------ Extract spectral windows / frequencies ------
-        # TODO: fix hardcoding
-        #centre_freq = self.sensor.get('RFE/center-frequency-hz')
-        centre_freq = 6.67e9
+        bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
         num_chans = get_single_value(config_group['DBE'], 'n_chans')
+        channel_width = bandwidth / num_chans
+        fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
+
+        #TODO: This is going to be tricky. Katdal doesn't seem to support different frequencies for the L or R case.
+        if (fine_size != 0): #Simplest case, we are in a wideband / radiometer mode.
+            # Sky centre frequency = LO1 + LO2 - IF
+            LO1_values = self.sensor.get("")
+
+        else: # We're in a narrowband mode and the centre frequency is more complicated.
+            pass
+
+
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
                              '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
-        bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
-        channel_width = bandwidth / num_chans
 
         # Our RF into the ROACH will always be spectrally inverted, but since we're sampling
         # in the 2nd Nyquist zone, it'll be inverting again.
