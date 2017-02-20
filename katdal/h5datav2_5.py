@@ -334,10 +334,12 @@ class H5DataV2_5(DataSet):
             self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
 
         # ------ Extract spectral windows / frequencies ------
-        bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
-        num_chans = get_single_value(config_group['DBE'], 'n_chans')
+        #bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
+        bandwidth = 400e6
+        #num_chans = get_single_value(config_group['DBE'], 'n_chans')
+        num_chans = 1024
         channel_width = bandwidth / num_chans
-        fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
+        #fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
 
         #TODO: This is going to be tricky. Katdal doesn't seem to support different frequencies for the L or R case.
         #if (fine_size != 0): #Simplest case, we are in a wideband / radiometer mode.
