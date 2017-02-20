@@ -340,13 +340,13 @@ class H5DataV2_5(DataSet):
         fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
 
         #TODO: This is going to be tricky. Katdal doesn't seem to support different frequencies for the L or R case.
-        if (fine_size != 0): #Simplest case, we are in a wideband / radiometer mode.
-            # Sky centre frequency = LO1 + LO2 - IF
-            LO1_values = self.sensor.get("")
+        #if (fine_size != 0): #Simplest case, we are in a wideband / radiometer mode.
+        #    # Sky centre frequency = LO1 + LO2 - IF
+        #    LO1_values = self.sensor.get("")
 
-        else: # We're in a narrowband mode and the centre frequency is more complicated.
-            pass
-
+        #else: # We're in a narrowband mode and the centre frequency is more complicated.
+        #    pass
+        centre_freq = 6.7e9
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
