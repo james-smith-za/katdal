@@ -322,7 +322,9 @@ class H5DataV2_5(DataSet):
 
             #ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
-        ants = [katpoint.Antenna(config_group['Antennas'][name].attrs['description'])
+        # Temporarily casting this to string. I edited a file by hand to change the name and it seems to now read the
+        # attr as a np.ndarray
+        ants = [katpoint.Antenna(str(config_group['Antennas'][name].attrs['description']))
                 for name in config_group['Antennas']]
 
         self.subarrays = [Subarray(ants, corrprods)]
@@ -411,8 +413,7 @@ class H5DataV2_5(DataSet):
         # Set up catalogue containing all targets in file, with reference antenna as default antenna
         self.catalogue.add(target.unique_values)
 
-        #TODO: What is this line of code?
-        #self.catalogue.antenna = self.sensor['Antennas/%s/antenna' % (self.ref_ant,)][0]
+        self.catalogue.antenna = self.sensor['Antennas/%s/antenna' % (self.ref_ant,)][0]
         # Ensure that each target flux model spans all frequencies in data set if possible
         self._fix_flux_freq_range()
 
@@ -461,7 +462,7 @@ class H5DataV2_5(DataSet):
         #return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
         # TODO: This is hardcoded for the Ghana antenna. Just to make scape stop complaining. Do need to fix at some point.
         # TODO: The "beamwidth factor" (see katpoint docs) typically ranges from 1.03 to 1.22 - find appropriate value for Ghana antenna
-        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 1.03")]
+        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 1.22")]
 
     @staticmethod
     def _get_targets(filename):

@@ -42,7 +42,7 @@ def fs_to_kp_pointing_model(pmodl_file):
         katpoint pointing model (object? string?)
     """
     if pmodl_file == None:
-        pmodl_string = "0 " * 22
+        pmodl_string = "0:00:00 " * 22
         pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
         return pmodl_string
 
@@ -91,7 +91,7 @@ def fs_to_kp_pointing_model(pmodl_file):
             # pmodl_string += "%s "%(params[i])
 
         else:
-            pmodl_string += "0 "
+            pmodl_string += "0:00:00 "
 
     pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
     return pmodl_string
@@ -357,7 +357,9 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     # TODO: This should ideally come from the file, not be hardcoded here.
     # Note: The 0 0 0 just before the %s is the "delay model" which katpoint expects. We don't use it.
-    antenna_str = "Kuntunse, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s"%(fs_to_kp_pointing_model(pmodl_file))
+    # Antenna name has to be ant1, not Kuntunse. This refers to the reference antenna in the array, which is just
+    # ant1 because the array is only one antenna big.
+    antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s"%(fs_to_kp_pointing_model(pmodl_file))
     config_group["Antennas/ant1"].attrs["description"] = antenna_str
     antenna = katpoint.Antenna(antenna_str)
     print antenna.pointing_model
