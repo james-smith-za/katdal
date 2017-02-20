@@ -42,7 +42,7 @@ def fs_to_kp_pointing_model(pmodl_file):
         katpoint pointing model (object? string?)
     """
     if pmodl_file == None:
-        pmodl_string = "0:00:00 " * 22
+        pmodl_string = "0 " * 22
         pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
         return pmodl_string
 
@@ -91,7 +91,7 @@ def fs_to_kp_pointing_model(pmodl_file):
             # pmodl_string += "%s "%(params[i])
 
         else:
-            pmodl_string += "0:00:00 "
+            pmodl_string += "0 "
 
     pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
     return pmodl_string
