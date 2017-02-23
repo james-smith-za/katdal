@@ -302,30 +302,22 @@ class H5DataV2_5(DataSet):
             return model_string
 
         ants = []
-        # TODO This is hard-coded for the Ghana dish. Fix! At the moment, the acquisition server hasn't been updated to read them properly. Something is funky with the way that the antennas are printed though, at the moment they kind of aren't.
-        #for antenna in config_group["Antennas"]:
-            #name           = config_group["Antennas"][antenna].attrs['name']
-            #name            = "ant1"
-            #latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            #latitude        = 5.7515983 * np.pi / 180
-            #longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            #longitude       = -0.3056904  * np.pi / 180
-            #altitude       = config_group["Antennas"][antenna].attrs['altitude']
-            #altitude        = 116
-            #diameter       = config_group["Antennas"][antenna].attrs['diameter']
-            #diameter        = 32
-            #delay_model    = config_group["Antennas"][antenna].attrs['delay_model']
-            #delay_model     = None
-            #pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
-            #beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
-            #beamwidth       = 1.2 # This isn't the beamwidth in degrees, but a scaling factor for the 'textbook' beamwidth. Don't quite know what it is for the Kuntunse antenna yet.
+        for antenna in config_group["Antennas"]:
+            name           = config_group["Antennas"][antenna].attrs['name']
+            latitude       = config_group["Antennas"][antenna].attrs['latitude']
+            longitude      = config_group["Antennas"][antenna].attrs['longitude']
+            altitude       = config_group["Antennas"][antenna].attrs['altitude']
+            diameter       = config_group["Antennas"][antenna].attrs['diameter']
+            delay_model    = "0 0 0" #TODO: Determine whether or not we need this.
+            pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
 
-            #ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
+            ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
         # Temporarily casting this to string. I edited a file by hand to change the name and it seems to now read the
         # attr as a np.ndarray
-        ants = [katpoint.Antenna(str(config_group['Antennas'][name].attrs['description']))
-                for name in config_group['Antennas']]
+        #ants = [katpoint.Antenna(str(config_group['Antennas'][name].attrs['description']))
+        #        for name in config_group['Antennas']]
 
         self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
@@ -336,21 +328,26 @@ class H5DataV2_5(DataSet):
             self.sensor['Antennas/%s/antenna' % (ant.name,)] = CategoricalData([ant], [0, len(data_timestamps)])
 
         # ------ Extract spectral windows / frequencies ------
-        #bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
-        bandwidth = 400e6
-        #num_chans = get_single_value(config_group['DBE'], 'n_chans')
-        num_chans = 1024
+        bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
+        num_chans = get_single_value(config_group['DBE'], 'n_chans')
         channel_width = bandwidth / num_chans
-        #fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
+        fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
 
         #TODO: This is going to be tricky. Katdal doesn't seem to support different frequencies for the L or R case.
         #if (fine_size != 0): #Simplest case, we are in a wideband / radiometer mode.
-        #    # Sky centre frequency = LO1 + LO2 - IF
-        #    LO1_values = self.sensor.get("")
+            # Sky centre frequency = LO1 + LO2 - IF
+            #if get_single_value(sensors_group["DBE"], "rfe.band.select.LCP")
+            #LO1_values = self.sensor.get(sensors_group["RFE"], "rfe.lo0.chan0")
+
+        print self.sensor.get(sensors_group["RFE"], "rfe.band.select.LCP")
+        print self.sensor.get(sensors_group["RFE"], "rfe.band.select.RCP")
+        print self.sensor.get(sensors_group["RFE"], "rfe.lo0.chan0.frequency")
+        print self.sensor.get(sensors_group["RFE"], "rfe.lo0.chan1.frequency")
+        print self.sensor.get(sensors_group["RFE"], "rfe.lo1.frequency")
+
 
         #else: # We're in a narrowband mode and the centre frequency is more complicated.
         #    pass
-        centre_freq = 6.7e9
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
