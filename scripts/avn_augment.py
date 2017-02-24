@@ -140,11 +140,12 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # This is an optional thing so it's probably better just to put it in a try .. except block.
     # Later on I might decide to make it mandatory to run the script.
     try:
-        print "Opening %s for FS pointing model..."%(args[2])
         pmodl_file = open(args[2])
     except (IOError, IndexError):
-        print "Error opening pointing model file! Check spelling and path. Using default (zero) pointing model."
+        print "No pointing model file provided (or error in opening file). Using pointing model recorded in the h5 file."
         pmodl_file = None
+    else:
+        print "Pointing model file provided, will overwrite pointing model in the h5 file."
 
 
     ##### Miscellaneous info about the file printed for the user's convenience. #####
