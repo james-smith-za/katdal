@@ -181,13 +181,12 @@ class H5DataV2_5(DataSet):
 
         # ------ Extract timestamps ------
         accumulation_length = get_single_value(config_group['DBE'], 'accum_length') # Accumulation length in number of FPGA frames.
-        # TODO This is very much a shortcut. I'm going to need more info on sampling frequency, FFT sizes, etc. in order to be able
-        # to properly determine the dump period
-        # Conversion factor for WB spectrometer:
-        # conversion_factor = 0.008 / 3125
-        # And for the narrowband spectrometer:
-        conversion_factor = (1.0/800e6) * 2048
-        self.dump_period  = accumulation_length * conversion_factor
+        coarse_size = get_single_value(config_group["DBE"], "dbe.fft.coarse.size")
+        fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
+        sampling_frequency = 800e6  # Have to hardcode this for the time being.
+        self.dump_period  = float(accumulation_length) * coarse_size / sampling_frequency
+        if fine_size != 0:
+            self.dump_period *= fine_size
 
         # Obtain visibility data and timestamps
         self._vis         = data_group['VisData'][:-1,:,:]
@@ -331,17 +330,18 @@ class H5DataV2_5(DataSet):
         bandwidth = get_single_value(config_group['DBE'], 'bandwidth')
         num_chans = get_single_value(config_group['DBE'], 'n_chans')
         channel_width = bandwidth / num_chans
-        fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
 
-        centre_freq = []
-        #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
-        if (fine_size == 0): #Simplest case, we are in a wideband / radiometer mode.
+        if False:
             # Sky centre frequency = LO1 + LO2 - IF
-            band_select = self.sensor.get("RFE/rfe.band.select.LCP") # Ignoring the RCP for the time being, assuming both freqs are same.
-            LO_5GHz = self.sensor.get("RFE/rfe.lo0.chan0.frequency")
-            LO_6p7GHz = self.sensor.get("RFE/rfe.lo0.chan1.frequency")
-            LO_IF = self.sensor.get("RFE/rfe.lo1.frequency")
+            # Ignoring the RCP for the time being, assuming both freqs are same.
+            band_select = self.sensor["RFE/rfe.band.select.LCP"]
+            LO_5GHz = self.sensor["RFE/rfe.lo0.chan0.frequency"]
+            LO_6p7GHz = self.sensor["RFE/rfe.lo0.chan1.frequency"]
+            LO_IF = self.sensor["RFE/rfe.lo1.frequency"]
 
+            centre_freq = []
+            #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
+            # By default assume a wideband / radiometer mode.
             for i in range(len(band_select)):
                 if band_select[i] == "0":
                     centre_freq.append(LO_5GHz[i] + LO_IF[i] - 600e6)
@@ -349,13 +349,20 @@ class H5DataV2_5(DataSet):
                     centre_freq.append(LO_6p7GHz[i] + LO_IF[i] - 600e6)
                 else:
                     raise BrokenFile("Invalid receiver band selection.")
+                print "Added band: ", centre_freq[-1]
             centre_freq = np.array(centre_freq)
 
-        else:
-            # TODO: Calculate centre frequency of NB. Just setting it to zero for the time being.
-            # TODO: Ask Andrew vdBijl about this on Monday.
-            centre_freq = np.zeros(len(self.sensor.get("RFE/rfe.band.select.LCP")))
+            # If we aren't in wideband mode, then we need to do some additional tweaking:
+            if (fine_size != 0):
+                centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
+                coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
+                narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
+                print centre_freq.shape
+                print narrowband_channel_select.shape
+                print coarse_channel_bandwidth
+                centre_freq += narrowband_channel_select * coarse_channel_bandwidth
 
+        centre_freq = float(raw_input("Please manually enter centre frequency (Hz): "))
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
@@ -372,9 +379,16 @@ class H5DataV2_5(DataSet):
         #     # Guess the mode for version 2.0 files that haven't been re-augmented
         #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
 
-        self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, sideband=sideband)]
-        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
-        self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
+        if False:
+            self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
+                                     for spw_centre in centre_freq.unique_values]
+            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
+                                                             centre_freq.events)
+            self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
+        else:
+            self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, sideband=sideband)]
+            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
+            self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
 
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
