@@ -16,7 +16,8 @@ option_parser = OptionParser(usage="python %prog [options] h5filename csvfilenam
 (options, args) = option_parser.parse_args()
 
 if not (len(args) == 3 or len(args) == 2):
-    option_parser.error("Wrong number of arguments - two or three filenames expected, %d arguments received."%(len(args)))
+    option_parser.error("Wrong number of arguments - two or three filenames expected, %d arguments received." %
+                        (len(args)))
 
 
 # Some functions to make doing things easier:
@@ -121,7 +122,7 @@ def write_dataset(dset_name, location, data, attributes):
     for i in attributes:
         dset.attrs[i] = attributes[i]
     del i
-    response += "%s dataset successfully added to file." % (dset_name)
+    response += "%s dataset successfully added to file." % dset_name
     return response
 
 
@@ -131,7 +132,7 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     # Pandas doesn't support context managers.
     try:
-        print "Opening %s for antenna position data..."%(args[1])
+        print "Opening %s for antenna position data..." % (args[1])
         csv_file = pd.read_csv(args[1], skipinitialspace=True)
         print "File successfully opened."
     except IOError:
@@ -236,46 +237,47 @@ with h5py.File(name=args[0], mode='r+') as h5file:
             windspeed_array.append((time, windspeed, "nominal"))
             winddirection_array.append((time, winddirection, "nominal"))
 
-    temperature_array = np.array(temperature_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-    pressure_array = np.array(pressure_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-    humidity_array = np.array(humidity_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-    windspeed_array = np.array(windspeed_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
-    winddirection_array = np.array(winddirection_array, dtype=[('timestamp','<f8'),('value', '<f8'),('status', 'S7')])
+    temperature_array = np.array(temperature_array, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+    pressure_array = np.array(pressure_array, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+    humidity_array = np.array(humidity_array, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+    windspeed_array = np.array(windspeed_array, dtype=[('timestamp', '<f8'), ('value', '<f8'), ('status', 'S7')])
+    winddirection_array = np.array(winddirection_array, dtype=[('timestamp', '<f8'), ('value', '<f8'),
+                                                               ('status', 'S7')])
 
-    print write_dataset("air.temperature", enviro_group, data=temperature_array, attributes=
-                        {"description": "Air temperature",
+    print write_dataset("air.temperature", enviro_group, data=temperature_array, attributes={
+                         "description": "Air temperature",
                          "name": "air.temperature",
                          "type": "float64",
                          "units": "degC"})
-    print write_dataset("air.pressure", enviro_group, data=pressure_array, attributes=
-                        {"description": "Air pressure",
+    print write_dataset("air.pressure", enviro_group, data=pressure_array, attributes={
+                         "description": "Air pressure",
                          "name": "air.pressure",
                          "type": "float64",
                          "units": "mbar"})
-    print write_dataset("relative.humidity", enviro_group, data=humidity_array, attributes=
-                        {"description": "Relative humidity",
+    print write_dataset("relative.humidity", enviro_group, data=humidity_array, attributes={
+                         "description": "Relative humidity",
                          "name": "relative.humidity",
                          "type": "float64",
                          "units": "percent"})
-    print write_dataset("wind.speed", enviro_group, data=windspeed_array, attributes=
-                        {"description": "Wind speed",
+    print write_dataset("wind.speed", enviro_group, data=windspeed_array, attributes={
+                         "description": "Wind speed",
                          "name": "wind.speed",
                          "type": "float64",
                          "units": "m/s"})
-    print write_dataset("wind.direction", enviro_group, data=winddirection_array, attributes=
-                        {"description": "Wind direction",
+    print write_dataset("wind.direction", enviro_group, data=winddirection_array, attributes={
+                         "description": "Wind direction",
                          "name":        "wind.direction",
                          "type":        "float64",
                          "units":       "degrees (bearing)"})
     print "Environment data complete."
 
     # Antenna position information:
-    print "\nOpening %s for position-sensor addition..."%(args[1])
+    print "\nOpening %s for position-sensor addition..." % (args[1])
 
     # Check to see that the files line up in at least some way.
     pos_begin_time = float(csv_file["Timestamp"][0]) / 1000.0
     # Milliseconds in the file, divide to get proper unix time.
-    pos_end_time   = float(csv_file["Timestamp"][len(csv_file["Timestamp"]) - 1]) / 1000.0
+    pos_end_time = float(csv_file["Timestamp"][len(csv_file["Timestamp"]) - 1]) / 1000.0
     csv_duration = pos_end_time - pos_begin_time
     csv_duration_str = "%dh %dm %.2fs" % (int(csv_duration/3600),
                                           int(csv_duration - int(csv_duration/3600)*3600)/60,
@@ -351,7 +353,7 @@ with h5py.File(name=args[0], mode='r+') as h5file:
             while (float(csv_file["Timestamp"][pos_upper_index]) / 1000.0) > rf_end_time:
                 pos_upper_index -= 1
                 # While loop will break when it gets lower or equal to
-            pos_upper_index += 1 # Set it back to just after the RF data ends.
+            pos_upper_index += 1  # Set it back to just after the RF data ends.
         print "\nUpper bound: %d." % pos_upper_index
         print "CSV upper index: %.2f\tH5file upper index: %.2f" % \
               (csv_file["Timestamp"][pos_upper_index] / 1000.0, rf_end_time)
@@ -390,7 +392,7 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # Note: The 0 0 0 just before the %s is the "delay model" which katpoint expects. We don't use it.
     # Antenna name has to be ant1, not Kuntunse. This refers to the reference antenna in the array, which is just
     # ant1 because the array is only one antenna big.
-    antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s"%(fs_to_kp_pointing_model(pmodl_file))
+    antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s" % (fs_to_kp_pointing_model(pmodl_file))
     config_group["Antennas/ant1"].attrs["description"] = antenna_str
     antenna = katpoint.Antenna(antenna_str)
     print antenna.pointing_model
@@ -400,8 +402,8 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     target_dset.append((float(csv_file["Timestamp"][pos_lower_index]) / 1000.0, target, "nominal"))
     print "Writing target data..."
     target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
-    print write_dataset("target", antenna_sensor_group, data=target_dset, attributes=
-                        {"description": "Current target",
+    print write_dataset("target", antenna_sensor_group, data=target_dset, attributes={
+                         "description": "Current target",
                          "name": "target",
                          "type": "string",
                          "units": ""})
@@ -409,7 +411,7 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Reading position data from csv file into memory..."
     activity_dset.append((csv_file["Timestamp"][pos_lower_index] / 1000.0, "slew", "nominal"))
 
-    for i in range(0, len(timestamp_array), 20): #Down-sample by a factor of 20
+    for i in range(0, len(timestamp_array), 20):  # Down-sample by a factor of 20
         # ASCS / Encoder values
         azim_req_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
                                          csv_file["Azim req position"][pos_lower_index + i], "nominal"))
@@ -476,8 +478,8 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     print "Writing activity data..."
     activity_dset = np.array(activity_dset, dtype=[("timestamp", "<f8"), ("value", "S13"), ("status", "S7")])
-    print write_dataset("activity", antenna_sensor_group, data=activity_dset, attributes=
-                        {"description": "Synthesised antenna behaviour label",
+    print write_dataset("activity", antenna_sensor_group, data=activity_dset, attributes={
+                         "description": "Synthesised antenna behaviour label",
                          "name": "activity",
                          "type": "discrete",
                          "units": ""})
@@ -485,8 +487,8 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing requested azimuth..."
     azim_req_pointm_pos_dset = np.array(azim_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.request-pointm-azim", antenna_sensor_group, data=azim_req_pointm_pos_dset, attributes=
-                        {"description": "Requested (by user or Field System) azimuth position.",
+    print write_dataset("pos.request-pointm-azim", antenna_sensor_group, data=azim_req_pointm_pos_dset, attributes={
+                         "description": "Requested (by user or Field System) azimuth position.",
                          "name": "pos.request-pointm-azim",
                          "type": "float64",
                          "units": "degrees CW from N"})
@@ -494,16 +496,16 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing desired azimuth..."
     azim_des_pointm_pos_dset = np.array(azim_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.desired-pointm-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes=
-                        {"description": "Intermediate azimuth position setpoint used by the ASCS.",
+    print write_dataset("pos.desired-pointm-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes={
+                         "description": "Intermediate azimuth position setpoint used by the ASCS.",
                          "name": "pos.desired-pointm-azim",
                          "type": "float64",
                          "units": "degrees CW from N"})
 
     azim_des_scan_pos_dset = np.array(azim_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                      ('status', 'S7')])
-    print write_dataset("pos.desired-scan-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes=
-                        {"description": "Intermediate azimuth position setpoint used by the ASCS.",
+    print write_dataset("pos.desired-scan-azim", antenna_sensor_group, data=azim_des_pointm_pos_dset, attributes={
+                         "description": "Intermediate azimuth position setpoint used by the ASCS.",
                          "name": "pos.desired-scan-azim",
                          "type": "float64",
                          "units": "degrees CW from N"})
@@ -511,16 +513,16 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing actual azimuth..."
     azim_act_pointm_pos_dset = np.array(azim_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.actual-pointm-azim", antenna_sensor_group, data=azim_act_pointm_pos_dset, attributes=
-                        {"description": "Azimuth data returned by the encoder.",
+    print write_dataset("pos.actual-pointm-azim", antenna_sensor_group, data=azim_act_pointm_pos_dset, attributes={
+                         "description": "Azimuth data returned by the encoder.",
                          "name": "pos.actual-pointm-azim",
                          "type": "float64",
                          "units": "degrees CW from N"})
 
     azim_act_scan_pos_dset = np.array(azim_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                      ('status', 'S7')])
-    print write_dataset("pos.actual-scan-azim", antenna_sensor_group, data=azim_act_scan_pos_dset, attributes=
-                        {"description": "Azimuth data returned by the encoder.",
+    print write_dataset("pos.actual-scan-azim", antenna_sensor_group, data=azim_act_scan_pos_dset, attributes={
+                         "description": "Azimuth data returned by the encoder.",
                          "name": "pos.actual-scan-azim",
                          "type": "float64",
                          "units": "degrees CW from N"})
@@ -528,16 +530,16 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing requested elevation..."
     elev_req_pointm_pos_dset = np.array(elev_req_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.request-pointm-elev", antenna_sensor_group, data=elev_req_pointm_pos_dset, attributes=
-                        {"description": "Requested (by user or Field System) elevation position.",
+    print write_dataset("pos.request-pointm-elev", antenna_sensor_group, data=elev_req_pointm_pos_dset, attributes={
+                         "description": "Requested (by user or Field System) elevation position.",
                          "name": "request-pointm-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
 
     elev_req_scan_pos_dset = np.array(elev_req_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                      ('status', 'S7')])
-    print write_dataset("pos.request-scan-elev", antenna_sensor_group, data=elev_req_scan_pos_dset, attributes=
-                        {"description": "Requested (by user or Field System) elevation position.",
+    print write_dataset("pos.request-scan-elev", antenna_sensor_group, data=elev_req_scan_pos_dset, attributes={
+                         "description": "Requested (by user or Field System) elevation position.",
                          "name": "request-scan-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
@@ -545,16 +547,16 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing desired elevation..."
     elev_des_pointm_pos_dset = np.array(elev_des_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.desired-pointm-elev", antenna_sensor_group, data=elev_des_pointm_pos_dset, attributes=
-                        {"description": "Requested (by user or Field System) elevation position.",
+    print write_dataset("pos.desired-pointm-elev", antenna_sensor_group, data=elev_des_pointm_pos_dset, attributes={
+                         "description": "Requested (by user or Field System) elevation position.",
                          "name": "desired-pointm-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
 
     elev_des_scan_pos_dset = np.array(elev_des_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                      ('status', 'S7')])
-    print write_dataset("pos.desired-scan-elev", antenna_sensor_group, data=elev_des_scan_pos_dset, attributes=
-                        {"description": "Intermediate elevation position setpoint used by the ASCS.",
+    print write_dataset("pos.desired-scan-elev", antenna_sensor_group, data=elev_des_scan_pos_dset, attributes={
+                         "description": "Intermediate elevation position setpoint used by the ASCS.",
                          "name": "desired-scan-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
@@ -562,16 +564,16 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Writing actual elevation..."
     elev_act_pointm_pos_dset = np.array(elev_act_pointm_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                          ('status', 'S7')])
-    print write_dataset("pos.actual-pointm-elev", antenna_sensor_group, data=elev_act_pointm_pos_dset, attributes=
-                        {"description": "Elevation data returned by the encoder.",
+    print write_dataset("pos.actual-pointm-elev", antenna_sensor_group, data=elev_act_pointm_pos_dset, attributes={
+                         "description": "Elevation data returned by the encoder.",
                          "name": "actual-pointm-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
 
     elev_act_scan_pos_dset = np.array(elev_act_scan_pos_dset, dtype=[('timestamp', '<f8'), ('value', '<f8'),
                                                                      ('status', 'S7')])
-    print write_dataset("pos.actual-scan-elev", antenna_sensor_group, data=elev_act_scan_pos_dset, attributes=
-                        {"description": "Elevation data returned by the encoder.",
+    print write_dataset("pos.actual-scan-elev", antenna_sensor_group, data=elev_act_scan_pos_dset, attributes={
+                         "description": "Elevation data returned by the encoder.",
                          "name": "pos.actual-scan-elev",
                          "type": "float64",
                          "units": "degrees above horizontal"})
