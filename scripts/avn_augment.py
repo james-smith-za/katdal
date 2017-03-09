@@ -99,10 +99,10 @@ def fs_to_kp_pointing_model(pmodl_file):
     del i
 
     pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
-    return pmodl_string
+    return pmodl_string, tuple(params[1:])
 
 
-def write_dataset(dset_name, location, data, attributes):
+def write_dataset(dset_name, location, data, attributes=()):
     """Write a dataset to the location."""
     # TODO: This needs to be a bit refactored. I think it could be better.
     response = ""
@@ -115,7 +115,7 @@ def write_dataset(dset_name, location, data, attributes):
             response += "Dataset %s already exists, nonzero size, not altered. Was this file previously augmented?\n" %\
                         dset_name
             return response
-        del sensor_group["Antennas/ant1/%s" % dset_name]  # This actually removes the dataset.
+        del location[dset_name]  # This actually removes the dataset.
         response += "Sterile %s dataset removed. Adding augmented dataset.\n" % dset_name
 
     dset = location.create_dataset(dset_name, data=data)
@@ -388,11 +388,14 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     antenna_sensor_group = sensor_group["Antennas/ant1"]
 
-    # TODO: This should ideally come from the file, not be hardcoded here.
     # Note: The 0 0 0 just before the %s is the "delay model" which katpoint expects. We don't use it.
     # Antenna name has to be ant1, not Kuntunse. This refers to the reference antenna in the array, which is just
     # ant1 because the array is only one antenna big.
-    antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s" % (fs_to_kp_pointing_model(pmodl_file))
+    pmodl_set = fs_to_kp_pointing_model(pmodl_file)
+    del h5file["MetaData/Configuration/Antennas/ant1/pointing-model-params"]
+    print write_dataset("pointing-model-params", h5file["MetaData/Configuration/Antennas/ant1"], pmodl_set[1:],
+                        attributes={"description": "Pointing model retrieved from Field System mdlpo.ctl file."})
+    antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s" % (pmodl_set[0])
     config_group["Antennas/ant1"].attrs["description"] = antenna_str
     antenna = katpoint.Antenna(antenna_str)
     print antenna.pointing_model
@@ -466,12 +469,12 @@ with h5py.File(name=args[0], mode='r+') as h5file:
                                                        csv_file["Elev actual position"][pos_lower_index + i])
         actual_target.antenna = antenna
         if activity == "slew":
-            if actual_target.separation(req_target) < np.radians(0.02):  # a fifth of a HPBW
+            if actual_target.separation(req_target) < np.radians(0.09):  # a fifth of a HPBW
                 activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "scan", "nominal"))
                 activity = "scan"
         else:
             # if activity == "scan":
-            if actual_target.separation(req_target) > np.radians(0.1):  #  a HPBW
+            if actual_target.separation(req_target) > np.radians(1.0):  #  a HPBW
                 activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "slew", "nominal"))
                 activity = "slew"
     del i
