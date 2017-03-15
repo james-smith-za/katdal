@@ -86,6 +86,9 @@ def fs_to_kp_pointing_model(pmodl_file):
     params.extend(lines[15].split())
     params.extend(lines[17].split())
 
+    for i in range(len(params)):
+        params[i] = float(params[i])
+
     pmodl_string = ""
 
     for i in range(1, 23):
@@ -99,7 +102,7 @@ def fs_to_kp_pointing_model(pmodl_file):
     del i
 
     pmodl_string = pmodl_string[:-1]  # Remove the resulting space on the end.
-    return pmodl_string, tuple(params[1:])
+    return pmodl_string, np.array(params[1:])
 
 
 def write_dataset(dset_name, location, data, attributes=()):
@@ -392,11 +395,12 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # Antenna name has to be ant1, not Kuntunse. This refers to the reference antenna in the array, which is just
     # ant1 because the array is only one antenna big.
     pmodl_set = fs_to_kp_pointing_model(pmodl_file)
-    del h5file["MetaData/Configuration/Antennas/ant1/pointing-model-params"]
-    print write_dataset("pointing-model-params", h5file["MetaData/Configuration/Antennas/ant1"], pmodl_set[1:],
-                        attributes={"description": "Pointing model retrieved from Field System mdlpo.ctl file."})
     antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s" % (pmodl_set[0])
-    config_group["Antennas/ant1"].attrs["description"] = antenna_str
+    pmodl_set = np.array(pmodl_set[1:]).transpose()
+    del h5file["MetaData/Configuration/Antennas/ant1/pointing-model-params"]
+    print write_dataset("pointing-model-params", h5file["MetaData/Configuration/Antennas/ant1"], pmodl_set,
+                        attributes={"description": "Pointing model retrieved from Field System mdlpo.ctl file."})
+    #config_group["Antennas/ant1"].attrs["description"] = antenna_str
     antenna = katpoint.Antenna(antenna_str)
     print antenna.pointing_model
     activity = "slew"
