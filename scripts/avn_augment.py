@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # If positional data comes in separate files, they should be combined into one.
 # Suggested method of doing this:
 # > cat ./LogData* | sort | uniq | sed '1h;1d;$!H;$!d;G' > posdata.csv
@@ -180,7 +181,10 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     vis_shape = h5file["Data/VisData"].shape
 
-    print "Accumulation length:\t\t%.2f ms" % ((timestamps[1] - timestamps[0])*1000.0)
+    try:
+        print "Accumulation length:\t\t%.2f ms" % ((timestamps[1] - timestamps[0])*1000.0)
+    except ValueError:
+        print "Only one accumulation, uncertain of length."
     print "Number of accums:\t\t%d" % (vis_shape[0] - 1)
     print "Number of frequency channels:\t%d" % (vis_shape[1])
 
@@ -418,7 +422,9 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     print "Reading position data from csv file into memory..."
     activity_dset.append((csv_file["Timestamp"][pos_lower_index] / 1000.0, "slew", "nominal"))
 
-    for i in range(0, len(timestamp_array), 20):  # Down-sample by a factor of 20
+    sample_rate = 1.0 / (float(csv_file["Timestamp"][1] - csv_file["Timestamp"][0]) / 1000)
+
+    for i in range(0, len(timestamp_array), 2 * int(sample_rate)):  # Down-sample to approx. 1 per 2 seconds.
         # ASCS / Encoder values
         azim_req_pointm_pos_dset.append((float(csv_file["Timestamp"][pos_lower_index + i]) / 1000.0,
                                          csv_file["Azim req position"][pos_lower_index + i], "nominal"))
