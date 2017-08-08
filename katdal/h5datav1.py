@@ -25,7 +25,7 @@ import katpoint
 
 from .dataset import (DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow,
                       DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target)
-from .sensordata import SensorData, SensorCache
+from .sensordata import RecordSensorData, SensorCache
 from .categorical import CategoricalData
 from .lazy_indexer import LazyIndexer, LazyTransform
 from .concatdata import ConcatenatedLazyIndexer
@@ -88,6 +88,7 @@ class H5DataV1(DataSet):
         Underlying HDF5 file, exposed via :mod:`h5py` interface
 
     """
+
     def __init__(self, filename, ref_ant='', time_offset=0.0, mode='r', **kwargs):
         DataSet.__init__(self, filename, ref_ant, time_offset)
 
@@ -153,7 +154,7 @@ class H5DataV1(DataSet):
                 # Assume sensor dataset name is AntennaN/Sensors/dataset and rename it to Antennas/{ant}/dataset
                 ant_name = obj.parent.parent.attrs['description'].split(',')[0]
                 standardised_name = 'Antennas/%s/%s' % (ant_name, name.split('/')[-1])
-                cache[standardised_name] = SensorData(obj, standardised_name)
+                cache[standardised_name] = RecordSensorData(obj, standardised_name)
         ants_group.visititems(register_sensor)
         # Use estimated data timestamps for now, to speed up data segmentation
         # This will linearly interpolate pointing coordinates to correlator data timestamps (on access)
@@ -335,7 +336,8 @@ class H5DataV1(DataSet):
             keep = keep[:3] + (slice(None),) * (3 - len(keep))
             # Final indexing ensures that returned data are always 3-dimensional (i.e. keep singleton dimensions)
             force_3dim = tuple((np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep)
-            return np.dstack([tf[str(corrind)][force_3dim[:2]] for corrind in
+            # Conjugate the data to correct for the lower sideband downconversion
+            return np.dstack([tf[str(corrind)][force_3dim[:2]].conjugate() for corrind in
                               np.nonzero(corrprod_keep)[0]])[:, :, keep[2]][:, :, force_3dim[2]]
         extract_vis = LazyTransform('extract_vis_v1', index_corrprod,
                                     lambda shape: (shape[0], shape[1], corrprod_keep.sum()), np.complex64)
@@ -348,7 +350,7 @@ class H5DataV1(DataSet):
 
     @property
     def vis(self):
-        """Complex visibility data as a function of time, frequency and baseline.
+        r"""Complex visibility data as a function of time, frequency and baseline.
 
         The visibility data are returned as an array indexer of complex64, shape
         (*T*, *F*, *B*), with time along the first dimension, frequency along the
@@ -361,6 +363,9 @@ class H5DataV1(DataSet):
         data array itself from the indexer `x`, do `x[:]` or perform any other
         form of indexing on it. Only then will data be loaded into memory.
 
+        The sign convention of the imaginary part is consistent with an
+        electric field of :math:`e^{i(\omega t - jz)}` i.e. phase that
+        increases with time.
         """
         return ConcatenatedLazyIndexer(self._vis_indexers())
 
