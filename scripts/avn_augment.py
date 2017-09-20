@@ -11,12 +11,17 @@ import katpoint
 
 # Set up option parser
 from optparse import OptionParser
-option_parser = OptionParser(usage="python %prog [options] h5filename csvfilename pmodlfilename")
-
+option_parser = OptionParser(usage="python %prog h5filename csvfilename [options]")
+pmodl_filename = "mdlpo.ctl"
+option_parser.add_option("-p", "--pmodl",
+                         action="store",
+                         dest="pmodl_file",
+                         default=pmodl_filename,
+                         help="Name of pointing model file. Default: %s" % pmodl_filename)
 # Not using any options at this stage, just the arguments. May want more flexibility in future.
 (options, args) = option_parser.parse_args()
 
-if not (len(args) == 3 or len(args) == 2):
+if len(args) != 2:
     option_parser.error("Wrong number of arguments - two or three filenames expected, %d arguments received." %
                         (len(args)))
 
@@ -150,12 +155,12 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # This is an optional thing so it's probably better just to put it in a try .. except block.
     # Later on I might decide to make it mandatory to run the script.
     try:
-        pmodl_file = open(args[2])
-    except (IOError, IndexError):
-        print "No pointing model file provided (or error in opening file). Using pmodel recorded in the h5 file."
+        pmodl_file = open(options["pmodl_file"])
+    except (IOError):
+        print "Error in opening %s. Using zero pmodel." % options["pmodl_file"]
         pmodl_file = None
     else:
-        print "Pointing model file provided, will overwrite pointing model in the h5 file."
+        print "Using provided pointing model file %s." % options["pmodl_file"]
 
     # Miscellaneous info about the file printed for the user's convenience:
     timestamps = h5file["Data/Timestamps"]
