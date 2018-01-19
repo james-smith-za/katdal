@@ -1,6 +1,23 @@
 History
 =======
 
+0.9 (2018-01-16)
+----------------
+* New ChunkStore and telstate-based parser for future v4 format
+* Use python-casacore (>=2.2.1) to create Measurement Sets instead of blank.ms
+* Read new-style noise diode sensor names, serial numbers and L0 stream metadata
+* Select multiple polarisations (useful for cross-pol)
+* Relax the "expected number of dumps" check to avoid spurious warnings
+* Fix NumPy 1.14 warnings
+
+0.8 (2017-08-08)
+----------------
+* Fix upside-down MeerKAT images
+* SensorData rework to load gain solutions and access telstate efficiently
+* Improve mapping of sensor events onto dumps, especially for long (8 s) dumps
+* Fix NumPy 1.13 warnings and errors
+* Support UHF receivers
+
 0.7.1 (2017-01-19)
 ------------------
 

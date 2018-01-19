@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2018, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -27,7 +27,6 @@ import numpy as np
 
 class InvalidTransform(Exception):
     """Transform changes data shape in unallowed way."""
-    pass
 
 
 class LazyTransform(object):
@@ -60,6 +59,7 @@ class LazyTransform(object):
         Type of output array after transformation (None if same as input array)
 
     """
+
     def __init__(self, name=None, transform=lambda d, k: d, new_shape=lambda s: tuple(s), dtype=None):
         self.name = 'unnamed' if name is None else name
         self.transform = transform
@@ -148,6 +148,7 @@ class LazyIndexer(object):
         If transform chain does not obey restrictions on changing the data shape
 
     """
+
     def __init__(self, dataset, keep=slice(None), transforms=None):
         self.dataset = dataset
         self.transforms = [] if transforms is None else transforms
@@ -179,7 +180,7 @@ class LazyIndexer(object):
 
     def __repr__(self):
         """Short human-friendly string representation of lazy indexer object."""
-        return "<katdal.%s '%s': shape %s, type '%s' at 0x%x>" % \
+        return "<katdal.%s '%s': shape %s, type %s at 0x%x>" % \
                (self.__class__.__name__, self.name, self.shape, self.dtype, id(self))
 
     def _name_shape_dtype(self, name, shape, dtype):

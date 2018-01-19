@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2018, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -56,4 +56,10 @@ setup(name="katdal",
       setup_requires=['katversion'],
       use_katversion=True,
       install_requires=['numpy', 'katpoint', 'h5py'],
-      test_suite="nose.collector")
+      extras_require={
+        'ms': ['python-casacore >= 2.2.1'],
+        's3': ['botocore'],
+        # rados is not in PyPI but available as Debian package python-rados
+        'rados': ['rados']
+      },
+      tests_require=['nose'])

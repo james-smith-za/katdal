@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2018, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -33,12 +33,10 @@ logger = logging.getLogger(__name__)
 
 class WrongVersion(Exception):
     """Trying to access data using accessor class with the wrong version."""
-    pass
 
 
 class BrokenFile(Exception):
     """Data set could not be loaded because file is inconsistent or misses critical bits."""
-    pass
 
 
 def array_equal(a1, a2):
@@ -54,6 +52,54 @@ def array_equal(a1, a2):
     except AttributeError:
         a1, a2 = np.asarray(a1), np.asarray(a2)
         return (a1.shape == a2.shape) and np.all(a1 == a2)
+
+
+class AttrsSensors(object):
+    """Metadata in the form of attributes and sensors.
+
+    Parameters
+    ----------
+    attrs : mapping from string to object
+        Metadata attributes
+    sensors : mapping from string to :class:`SensorData` objects
+        Metadata sensor cache mapping sensor names to raw sensor data
+    name : string, optional
+        Identifier that describes the origin of the metadata (backend-specific)
+
+    """
+    def __init__(self, attrs, sensors, name='custom'):
+        self.attrs = attrs
+        self.sensors = sensors
+        self.name = name
+
+
+class VisFlagsWeights(object):
+    """Correlator data in the form of visibilities, flags and weights.
+
+    Parameters
+    ----------
+    vis : array-like of complex64, shape (*T*, *F*, *B*)
+        Complex visibility data as a function of time, frequency and baseline
+    flags : array-like of uint8, shape (*T*, *F*, *B*)
+        Flags as a function of time, frequency and baseline
+    weights : array-like of float32, shape (*T*, *F*, *B*)
+        Visibility weights as a function of time, frequency and baseline
+    name : string, optional
+        Identifier that describes the origin of the data (backend-specific)
+
+    """
+    def __init__(self, vis, flags, weights, name='custom'):
+        if not (vis.shape == flags.shape == weights.shape):
+            raise ValueError("Shapes of vis %s, flags %s and weights %s differ"
+                             % (vis.shape, flags.shape, weights.shape))
+        self.vis = vis
+        self.flags = flags
+        self.weights = weights
+        self.name = name
+
+    @property
+    def shape(self):
+        return self.vis.shape
 
 
 class Subarray(object):
@@ -78,6 +124,7 @@ class Subarray(object):
         List of correlator input labels found in `corr_products`, e.g. 'ant1h'
 
     """
+
     def __init__(self, ants, corr_products):
         self.corr_products = np.array([(inpA.lower(), inpB.lower()) for inpA, inpB in corr_products])
         # Extract all inputs (and associated antennas) from correlation product list
@@ -138,12 +185,14 @@ class SpectralWindow(object):
         Centre frequency of each frequency channel (assuming LSB mixing), in Hz
 
     """
+
     def __init__(self, centre_freq, channel_width, num_chans, product=None,
                  sideband=-1, band='L'):
         self.centre_freq = centre_freq
         self.channel_width = channel_width
         self.num_chans = num_chans
         self.product = product if product is not None else ''
+        self.sideband = sideband
         self.band = band
         # Don't subtract half a channel width as channel 0 is centred on 0 Hz in baseband
         self.channel_freqs = centre_freq + sideband * channel_width * (np.arange(num_chans) - num_chans / 2)
@@ -262,7 +311,7 @@ def _calc_uvw(cache, name, antA, antB):
     u, v, w = np.empty(len(cache.timestamps)), np.empty(len(cache.timestamps)), np.empty(len(cache.timestamps))
     targets = cache.get('Observation/target')
     for segm, target in targets.segments():
-        u[segm], v[segm], w[segm] = target.uvw(antennaB, cache.timestamps[segm], antennaA)
+        u[segm], v[segm], w[segm] = target.uvw(antennaA, cache.timestamps[segm], antennaB)
     cache[antA_group + 'u_%s' % (antB,)] = u
     cache[antA_group + 'v_%s' % (antB,)] = v
     cache[antA_group + 'w_%s' % (antB,)] = w
@@ -370,6 +419,7 @@ class DataSet(object):
         Size of selected visibility data array, in bytes
 
     """
+
     def __init__(self, name, ref_ant='', time_offset=0.0):
         self.name = name
         self.ref_ant = ref_ant
@@ -395,7 +445,7 @@ class DataSet(object):
         self.channels = np.empty(0, dtype=np.int)
 
         self.dump_period = 0.0
-        self.sensor = None
+        self.sensor = {}
         self.catalogue = katpoint.Catalogue()
         self.start_time = katpoint.Timestamp(0.0)
         self.end_time = katpoint.Timestamp(0.0)
@@ -553,7 +603,7 @@ class DataSet(object):
         if time_keep is not None:
             self._time_keep = time_keep
             # Ensure that sensor cache gets updated time selection
-            if self.sensor is not None:
+            if self.sensor:
                 self.sensor._set_keep(self._time_keep)
         if freq_keep is not None:
             self._freq_keep = freq_keep
@@ -579,11 +629,11 @@ class DataSet(object):
         The selection criteria are divided into groups, based on whether they
         affect the time, frequency or correlation product dimension::
 
-        * Time: *dumps*, *timerange*, *scans*, *compscans*, *targets*
-        * Frequency: *channels*, *freqrange*
-        * Correlation product: *corrprods*, *ants*, *inputs*, *pol*
+        * Time: `dumps`, `timerange`, `scans`, `compscans`, `targets`
+        * Frequency: `channels`, `freqrange`
+        * Correlation product: `corrprods`, `ants`, `inputs`, `pol`
 
-        The *subarray* and *spw* criteria are special, as they affect multiple
+        The `subarray` and `spw` criteria are special, as they affect multiple
         dimensions (time + correlation product and time + frequency,
         respectively), are always active and are forced to be a single index.
 
@@ -592,12 +642,12 @@ class DataSet(object):
         criterion (e.g. `targets=['Hyd A', 'Vir A']`) are ORed together. When a
         second select() call is done, all new selections replace previous
         selections on the same dimension, while existing selections on other
-        dimensions are preserved. The *reset* parameter finetunes this behaviour.
+        dimensions are preserved. The `reset` parameter finetunes this behaviour.
 
         If :meth:`select` is called without any parameters the selection is
         reset to the original data set.
 
-        In addition, the *weights* and *flags* criteria are lists of names that
+        In addition, the `weights` and `flags` criteria are lists of names that
         select which weights and flags to include in the corresponding data set
         property.
 
@@ -640,8 +690,9 @@ class DataSet(object):
             Select antennas by name or object
         inputs : string or sequence of strings, optional
             Select inputs by label
-        pol : {'H', 'V', 'HH', 'VV', 'HV', 'VH'}, optional
-            Select polarisation term
+        pol : string or sequence of strings
+              {'H', 'V', 'HH', 'VV', 'HV', 'VH'}, optional
+            Select polarisation terms
 
         weights : 'all' or string or sequence of strings, optional
             List of names of weights to be multiplied together, as a sequence
@@ -656,14 +707,14 @@ class DataSet(object):
             that will be modified by the new selections and leaves the selections
             on unaffected dimensions intact except if `select` is called without
             any parameters, in which case all selections are cleared. By setting
-            reset to '', new selections apply on top of existing selections.
+            `reset` to '', new selections apply on top of existing selections.
 
         Raises
         ------
         TypeError
-            If a keyword argument is unknown and strict_select is enabled
+            If a keyword argument is unknown and `strict` is enabled
         IndexError
-            If *spw* or *subarray* is out of range
+            If `spw` or `subarray` is out of range
 
         """
         time_selectors = ['dumps', 'timerange', 'scans', 'compscans', 'targets']
@@ -805,10 +856,24 @@ class DataSet(object):
                 self._corrprod_keep &= [(inpA in inps and inpB in inps)
                                         for inpA, inpB in self.subarrays[self.subarray].corr_products]
             elif k == 'pol':
-                polAB = v.lower()
-                polAB = polAB * 2 if polAB in ('h', 'v', 'l', 'r') else polAB
-                self._corrprod_keep &= [(inpA[-1] == polAB[0] and inpB[-1] == polAB[1])
-                                        for inpA, inpB in self.subarrays[self.subarray].corr_products]
+                pols = [i.strip() for i in v.split(',')] if isinstance(v, basestring) else v if is_iterable(v) else [v]
+                # Lower case and strip out empty strings
+                pols = [i.lower() for i in pols if i]
+
+                # Proceed if we have a selection
+                if len(pols) > 0:
+                    # If given a selection assume we keep nothing
+                    keep = np.zeros(self._corrprod_keep.shape, dtype=np.bool)
+
+                    # or separate polarisation selections together
+                    for polAB in pols:
+                        polAB = polAB * 2 if polAB in ('h', 'v', 'l', 'r') else polAB
+                        keep |= [(inpA[-1] == polAB[0] and inpB[-1] == polAB[1])
+                                               for inpA, inpB in self.subarrays[self.subarray].corr_products]
+
+                    # and into final corrprod selection
+                    self._corrprod_keep &= keep
+
             # Selections that affect weights and flags
             elif k == 'weights':
                 self._weights_keep = v
@@ -929,7 +994,7 @@ class DataSet(object):
 
     @property
     def vis(self):
-        """Complex visibility data as a function of time, frequency and corrprod.
+        r"""Complex visibility data as a function of time, frequency and corrprod.
 
         The visibility data are returned as an array of complex64, shape
         (*T*, *F*, *B*), with time along the first dimension, frequency along the
@@ -940,6 +1005,9 @@ class DataSet(object):
         matches the length of :meth:`freqs` and the number of correlation
         products *B* matches the length of :meth:`corr_products`.
 
+        The sign convention of the imaginary part is consistent with an
+        electric field of :math:`e^{i(\omega t - jz)}` i.e. phase that
+        increases with time.
         """
         raise NotImplementedError
 
@@ -1123,7 +1191,8 @@ class DataSet(object):
 
         This calculates the *u* coordinate of the baseline vector of each
         correlation product as a function of time while tracking the target.
-        It is returned as an array of float, shape (*T*, *B*).
+        It is returned as an array of float, shape (*T*, *B*). The sign
+        convention is :math:`u_1 - u_2` for baseline (ant1, ant2).
 
         """
         return self._sensor_per_corrprod('u')
@@ -1134,7 +1203,8 @@ class DataSet(object):
 
         This calculates the *v* coordinate of the baseline vector of each
         correlation product as a function of time while tracking the target.
-        It is returned as an array of float, shape (*T*, *B*).
+        It is returned as an array of float, shape (*T*, *B*). The sign
+        convention is :math:`v_1 - v_2` for baseline (ant1, ant2).
 
         """
         return self._sensor_per_corrprod('v')
@@ -1145,7 +1215,8 @@ class DataSet(object):
 
         This calculates the *w* coordinate of the baseline vector of each
         correlation product as a function of time while tracking the target.
-        It is returned as an array of float, shape (*T*, *B*).
+        It is returned as an array of float, shape (*T*, *B*).The sign
+        convention is :math:`w_1 - w_2` for baseline (ant1, ant2).
 
         """
         return self._sensor_per_corrprod('w')
