@@ -22,7 +22,7 @@ import katpoint
 
 from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow, \
     DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target
-from .sensordata import SensorData, SensorCache
+from .sensordata import RecordSensorData, SensorCache
 from .categorical import CategoricalData, sensor_to_categorical
 from .lazy_indexer import LazyIndexer, LazyTransform
 
@@ -252,7 +252,7 @@ class H5DataV2_5(DataSet):
         def register_sensor(name, obj):
             """A sensor is defined as a non-empty dataset with expected dtype."""
             if isinstance(obj, h5py.Dataset) and obj.shape != () and obj.dtype.names == ('timestamp', 'value', 'status'):
-                cache[name] = SensorData(obj, name)
+                cache[name] = RecordSensorData(obj, name)
         sensors_group.visititems(register_sensor)
         # Use estimated data timestamps for now, to speed up data segmentation
         self.sensor = SensorCache(cache, data_timestamps, self.dump_period, keep=self._time_keep,
@@ -327,8 +327,6 @@ class H5DataV2_5(DataSet):
         num_chans = get_single_value(config_group['DBE'], 'n_chans')
         channel_width = bandwidth / num_chans
 
-        #print self.sensor
-
         # Sky centre frequency = LO1 + LO2 - IF
         # Ignoring the RCP for the time being, assuming both freqs are same.
         band_select = self.sensor["RFE/rfe.band.select.LCP"]
@@ -339,22 +337,17 @@ class H5DataV2_5(DataSet):
         centre_freq_5GHz = LO_5GHz + LO_final - 600e6;
         centre_freq_6p7GHz = LO_6p7GHz + LO_final - 600e6;
 
-        print band_select
-        print centre_freq_5GHz
-
-        #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
-        # By default assume a wideband / radiometer mode.
-        for i in range(len(band_select)):
+        centre_freq = np.zeros(len(band_select))
+        for i in range(len(centre_freq)):
             if band_select[i] == "0":
-                centre_freq.append(LO_5GHz[i] + LO_final[i] - 600e6)
+                centre_freq[i] = centre_freq_5GHz[i]
             elif band_select[i] == "1":
-                centre_freq.append(LO_6p7GHz[i] + LO_final[i] - 600e6)
+                centre_freq[i] = centre_freq_6p7GHz[i]
             else:
-                raise BrokenFile("Invalid receiver band selection.")
-            print "Added band: ", centre_freq[-1]
-        centre_freq = np.array(centre_freq)
+                pass
 
         # If we aren't in wideband mode, then we need to do some additional tweaking:
+        # TODO: Make sure this is consistent. I think I may be doing more than I need to here.
         if (fine_size != 0):
             centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
             coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
@@ -363,8 +356,6 @@ class H5DataV2_5(DataSet):
             print narrowband_channel_select.shape
             print coarse_channel_bandwidth
             centre_freq += narrowband_channel_select * coarse_channel_bandwidth
-
-        centre_freq = float(raw_input("Please manually enter centre frequency (Hz): "))
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
