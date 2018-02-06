@@ -357,6 +357,8 @@ class H5DataV2_5(DataSet):
             print coarse_channel_bandwidth
             centre_freq += narrowband_channel_select * coarse_channel_bandwidth
 
+        # TODO: Make CentreFreq into a CategoricalData object.
+
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
                              '(%d) differs from number of channels in data (%d)' % (num_chans, self._vis.shape[1]))
@@ -372,7 +374,7 @@ class H5DataV2_5(DataSet):
         #     # Guess the mode for version 2.0 files that haven't been re-augmented
         #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
 
-        if False:
+        if True:
             self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
                                      for spw_centre in centre_freq.unique_values]
             self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
