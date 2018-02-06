@@ -44,6 +44,11 @@ SENSOR_PROPS.update({
     '*attenuation': {'categorical': True},
     '*attenuator.horizontal': {'categorical': True},
     '*attenuator.vertical': {'categorical': True},
+    'RFE/rfe.band.select.LCP': {'categorical': True},
+    'RFE/rfe.band.select.RCP': {'categorical': True},
+    'RFE/rfe.lo-intermediate.5GHz.frequency': {'categorical': True},
+    'RFE/rfe.lo-intermediate.6_7GHz.frequency': {'categorical': True},
+    'RFE/rfe.lo-final.frequency': {'categorical': True}
 })
 
 SENSOR_ALIASES = {
@@ -278,25 +283,16 @@ class H5DataV2_5(DataSet):
                              (len(stokes_prods), self._stokes.shape[2]))
         # All antennas in configuration as katpoint Antenna objects
 
-        #TODO: This is perhaps not the best place for these functions. In the beginning perhaps?
-        def decimal2dms(decimal_degrees):
-            if decimal_degrees == 0:
-                return "0"
-            elif isinstance(decimal_degrees, int):
-                return str(decimal_degrees)
-            else:
-                degrees = int(decimal_degrees - (decimal_degrees % 1))
-                decimal_minutes = (decimal_degrees - degrees)*60.0
-                minutes = int(decimal_minutes - (decimal_minutes % 1))
-                decimal_seconds = (decimal_minutes - minutes) * 60.0
-                return "%d:%d:%.2f"%(degrees, minutes, decimal_seconds)
-
-        def make_string(param_list):
+        # TODO: This is perhaps not the best place for this. In the beginning perhaps?
+        def make_pmodel_string(param_list):
+            """Take the h5 dataset that stores the AVN pointing model and convert it to a
+               string in the format that katpoint expects.
+            """
             if not isinstance(param_list, h5py.Dataset):
                 raise ValueError("Error! param_list isn't an HDF5 dataset.")
             model_string = ""
             for param in param_list:
-                model_string += decimal2dms(param) + " "
+                  model_string += str(param) + " "
             model_string = model_string[:-1] # To take off the space on the end.
             return model_string
 
@@ -308,7 +304,7 @@ class H5DataV2_5(DataSet):
             altitude       = config_group["Antennas"][antenna].attrs['altitude']
             diameter       = config_group["Antennas"][antenna].attrs['diameter']
             delay_model    = "0 0 0" #TODO: Determine whether or not we need this.
-            pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            pointing_model  = make_pmodel_string(config_group["Antennas"][antenna]['pointing-model-params'])
             beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
@@ -331,36 +327,42 @@ class H5DataV2_5(DataSet):
         num_chans = get_single_value(config_group['DBE'], 'n_chans')
         channel_width = bandwidth / num_chans
 
-        if False:
-            # Sky centre frequency = LO1 + LO2 - IF
-            # Ignoring the RCP for the time being, assuming both freqs are same.
-            band_select = self.sensor["RFE/rfe.band.select.LCP"]
-            LO_5GHz = self.sensor["RFE/rfe.lo0.chan0.frequency"]
-            LO_6p7GHz = self.sensor["RFE/rfe.lo0.chan1.frequency"]
-            LO_IF = self.sensor["RFE/rfe.lo1.frequency"]
+        #print self.sensor
 
-            centre_freq = []
-            #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
-            # By default assume a wideband / radiometer mode.
-            for i in range(len(band_select)):
-                if band_select[i] == "0":
-                    centre_freq.append(LO_5GHz[i] + LO_IF[i] - 600e6)
-                elif band_select[i] == "1":
-                    centre_freq.append(LO_6p7GHz[i] + LO_IF[i] - 600e6)
-                else:
-                    raise BrokenFile("Invalid receiver band selection.")
-                print "Added band: ", centre_freq[-1]
-            centre_freq = np.array(centre_freq)
+        # Sky centre frequency = LO1 + LO2 - IF
+        # Ignoring the RCP for the time being, assuming both freqs are same.
+        band_select = self.sensor["RFE/rfe.band.select.LCP"]
+        LO_5GHz = self.sensor["RFE/rfe.lo-intermediate.5GHz.frequency"]
+        LO_6p7GHz = self.sensor["RFE/rfe.lo-intermediate.6_7GHz.frequency"]
+        LO_final = self.sensor["RFE/rfe.lo-final.frequency"]
 
-            # If we aren't in wideband mode, then we need to do some additional tweaking:
-            if (fine_size != 0):
-                centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
-                coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
-                narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
-                print centre_freq.shape
-                print narrowband_channel_select.shape
-                print coarse_channel_bandwidth
-                centre_freq += narrowband_channel_select * coarse_channel_bandwidth
+        centre_freq_5GHz = LO_5GHz + LO_final - 600e6;
+        centre_freq_6p7GHz = LO_6p7GHz + LO_final - 600e6;
+
+        print band_select
+        print centre_freq_5GHz
+
+        #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
+        # By default assume a wideband / radiometer mode.
+        for i in range(len(band_select)):
+            if band_select[i] == "0":
+                centre_freq.append(LO_5GHz[i] + LO_final[i] - 600e6)
+            elif band_select[i] == "1":
+                centre_freq.append(LO_6p7GHz[i] + LO_final[i] - 600e6)
+            else:
+                raise BrokenFile("Invalid receiver band selection.")
+            print "Added band: ", centre_freq[-1]
+        centre_freq = np.array(centre_freq)
+
+        # If we aren't in wideband mode, then we need to do some additional tweaking:
+        if (fine_size != 0):
+            centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
+            coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
+            narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
+            print centre_freq.shape
+            print narrowband_channel_select.shape
+            print coarse_channel_bandwidth
+            centre_freq += narrowband_channel_select * coarse_channel_bandwidth
 
         centre_freq = float(raw_input("Please manually enter centre frequency (Hz): "))
 
@@ -392,6 +394,7 @@ class H5DataV2_5(DataSet):
 
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
+
         scan = self.sensor.get('Antennas/%s/activity' % (self.ref_ant,))
         # If the antenna starts slewing on the second dump, incorporate the first dump into the slew too.
         # This scenario typically occurs when the first target is only set after the first dump is received.
