@@ -352,12 +352,11 @@ class H5DataV2_5(DataSet):
             centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
             coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
             narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
-            print centre_freq.shape
-            print narrowband_channel_select.shape
-            print coarse_channel_bandwidth
             centre_freq += narrowband_channel_select * coarse_channel_bandwidth
 
-        # TODO: Make CentreFreq into a CategoricalData object.
+        # TODO: Verify that this has worked.
+
+        centre_freq = sensor_to_categorical(self._timestamps, centre_freq, data_timestamps, self.dump_period)
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
