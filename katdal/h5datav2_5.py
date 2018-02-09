@@ -12,8 +12,7 @@
 
 # TODO: weights NotImplementedError. Should it be?
 
-
-
+# TODO: Check that radians and degrees are used correctly.
 import logging
 
 import numpy as np
@@ -271,9 +270,10 @@ class H5DataV2_5(DataSet):
                              (len(corrprods), self._vis.shape[2]))
         # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
         # This will change it into  "ant1lant1l,ant1rant1r" which katdal expects.
-        #corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
+        # corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
         #             ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
         # Hardcode H, V for now as L, R not supported in katdal + scape yet
+        # TODO: This is a hack.
         corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
 
         stokes_prods = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
@@ -292,20 +292,20 @@ class H5DataV2_5(DataSet):
                 raise ValueError("Error! param_list isn't an HDF5 dataset.")
             model_string = ""
             for param in param_list:
-                  model_string += str(param) + " "
+                model_string += str(param) + " "
             model_string = model_string[:-1] # To take off the space on the end.
             return model_string
 
         ants = []
         for antenna in config_group["Antennas"]:
-            name           = config_group["Antennas"][antenna].attrs['name']
-            latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            altitude       = config_group["Antennas"][antenna].attrs['altitude']
-            diameter       = config_group["Antennas"][antenna].attrs['diameter']
-            delay_model    = "0 0 0" #TODO: Determine whether or not we need this.
-            pointing_model  = make_pmodel_string(config_group["Antennas"][antenna]['pointing-model-params'])
-            beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
+            name = config_group["Antennas"][antenna].attrs['name']
+            latitude = config_group["Antennas"][antenna].attrs['latitude']
+            longitude = config_group["Antennas"][antenna].attrs['longitude']
+            altitude = config_group["Antennas"][antenna].attrs['altitude']
+            diameter = config_group["Antennas"][antenna].attrs['diameter']
+            delay_model = None
+            pointing_model = make_pmodel_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            beamwidth = config_group["Antennas"][antenna].attrs['beamwidth']
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
@@ -328,7 +328,7 @@ class H5DataV2_5(DataSet):
         channel_width = bandwidth / num_chans
 
         # Sky centre frequency = LO1 + LO2 - IF
-        # Ignoring the RCP for the time being, assuming both freqs are same.
+        # TODO: Figure out how to handle if LCP and RCP are different.
         band_select = self.sensor["RFE/rfe.band.select.LCP"]
         LO_5GHz = self.sensor["RFE/rfe.lo-intermediate.5GHz.frequency"]
         LO_6p7GHz = self.sensor["RFE/rfe.lo-intermediate.6_7GHz.frequency"]
@@ -344,7 +344,7 @@ class H5DataV2_5(DataSet):
             elif band_select[i] == "1":
                 centre_freq[i] = centre_freq_6p7GHz[i]
             else:
-                pass
+                raise BrokenFile("Unknown band selection, seems to be neither 5 GHz nor 6.7 GHz.")
 
         # If we aren't in wideband mode, then we need to do some additional tweaking:
         # TODO: Make sure this is consistent. I think I may be doing more than I need to here.
@@ -354,7 +354,7 @@ class H5DataV2_5(DataSet):
             narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
             centre_freq += narrowband_channel_select * coarse_channel_bandwidth
 
-        # TODO: Verify that this has worked.
+        # TODO: Verify that this has worked. Seems to be but I need to put in more realistic test values.
 
         centre_freq = sensor_to_categorical(self._timestamps, centre_freq, data_timestamps, self.dump_period)
 
@@ -366,12 +366,6 @@ class H5DataV2_5(DataSet):
         # in the 2nd Nyquist zone, it'll be inverting again.
         # So I think our "sideband" value should be 1.
         sideband = 1
-
-        # try:
-        #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]  # TODO: Determine what our DBE modes are going to be.
-        # except KeyError, IndexError:
-        #     # Guess the mode for version 2.0 files that haven't been re-augmented
-        #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
 
         self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
                                  for spw_centre in centre_freq.unique_values]
@@ -463,13 +457,11 @@ class H5DataV2_5(DataSet):
         """
         f, version = H5DataV2_5._open(filename)
         config_group = f['MetaData/Configuration']
-        all_ants = [ant for ant in config_group['Antennas']]
-        script_ants = config_group['Observation'].attrs.get('script_ants')
-        script_ants = script_ants.split(',') if script_ants else all_ants
-        #return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
 
         # TODO: The "beamwidth factor" (see katpoint docs) typically ranges from 1.03 to 1.22
         # find appropriate value for Ghana antenna
+
+        # Only one antenna in an AVN file.
         return [katpoint.Antenna(config_group["Antennas/ant1"].attrs["name"],
                                  config_group["Antennas/ant1"].attrs["latitude"],
                                  config_group["Antennas/ant1"].attrs["longitude"],
@@ -499,11 +491,7 @@ class H5DataV2_5(DataSet):
         f, version = H5DataV2_5._open(filename)
         # Use the delay-tracking centre as the one and only target
         # Try two different sensors for the DBE target
-        try:
-            target_list = f['MetaData/Sensors/DBE/target']
-        except Exception:
-            # Since h5py errors have varied over the years, we need Exception
-            target_list = f['MetaData/Sensors/Beams/Beam0/target']
+        target_list = f['MetaData/Sensors/Antennas/ant1/target']
         all_target_strings = [target_data[1] for target_data in target_list]
         return katpoint.Catalogue(np.unique(all_target_strings))
 
