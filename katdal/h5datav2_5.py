@@ -373,16 +373,11 @@ class H5DataV2_5(DataSet):
         #     # Guess the mode for version 2.0 files that haven't been re-augmented
         #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
 
-        if True:
-            self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
-                                     for spw_centre in centre_freq.unique_values]
-            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
-                                                             centre_freq.events)
-            self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
-        else:
-            self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, sideband=sideband)]
-            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
-            self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
+        self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
+                                 for spw_centre in centre_freq.unique_values]
+        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
+                                                         centre_freq.events)
+        self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
 
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
