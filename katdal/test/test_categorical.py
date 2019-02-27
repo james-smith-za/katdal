@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2018, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,6 +15,7 @@
 ################################################################################
 
 """Tests for :py:mod:`katdal.categorical`."""
+from __future__ import print_function, division, absolute_import
 
 import numpy as np
 from numpy.testing import assert_array_equal

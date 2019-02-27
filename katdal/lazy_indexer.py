@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2018, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,10 +15,140 @@
 ################################################################################
 
 """Two-stage deferred indexer for objects with expensive __getitem__ calls."""
+from __future__ import print_function, division, absolute_import
+from builtins import zip, range, object
+
+import copy
+import threading
+from numbers import Integral
+from functools import reduce, partial
 
 import numpy as np
+import dask.array as da
+import dask.optimization
 
 # TODO support advanced integer indexing with non-strictly increasing indices (i.e. out-of-order and duplicates)
+
+
+def _range_to_slice(index):
+    """Convert sequence of evenly spaced non-negative ints to equivalent slice.
+
+    If the returned slice object is `s = slice(start, stop, step)`, the
+    following holds:
+
+        list(range(*s.indices(length))) == list(index)
+
+    where `length = max(start, 0 if stop is None else stop) + 1` (a proxy for
+    `max(index) + 1`). If the spacing between elements of `index` is zero
+    or uneven, raise ValueError.
+    """
+    if not len(index):
+        return slice(None, 0, None)
+    if any(i for i in index if i < 0):
+        raise ValueError('Could not convert {} to a slice (contains negative '
+                         'elements)'.format(index))
+    increments_left = set(np.diff(index))
+    step = increments_left.pop() if increments_left else 1
+    if step == 0 or increments_left:
+        raise ValueError('Could not convert {} to a slice (unevenly spaced or '
+                         'zero increments)'.format(index))
+    start = index[0]
+    stop = index[-1] + step
+    # Avoid descending below 0 and thereby wrapping back to the top
+    return slice(start, stop if stop >= 0 else None, step)
+
+
+def _simplify_index(indices, shape):
+    """Generate an equivalent index expression that is cheaper to evaluate.
+
+    Advanced ("fancy") indexing using arrays/lists of booleans or ints is much
+    slower than basic indexing using slices and scalar ints in dask. If the
+    fancy index on a specific axis/dimension selects a range with a fixed
+    (non-zero) step size between indices, however, it can be converted into an
+    equivalent slice to get a simple index instead.
+
+    Note that when indexing along multiple axes with arrays, this may change
+    the semantics of the indexing (see NumPy's `NEP 21`_ for details). This
+    simplification is only guaranteed to be safe when used with outer indexing.
+
+    .. _NEP 21: http://www.numpy.org/neps/nep-0021-advanced-indexing.html
+    """
+    # First clean up and check indices, unpacking ellipsis and boolean arrays
+    indices = da.slicing.normalize_index(indices, shape)
+    out = []
+    axis = 0
+    for index in indices:
+        if index is not np.newaxis:
+            length = shape[axis]
+            axis += 1
+            # If there is 1-D fancy index on this axis, try to convert to slice
+            if isinstance(index, np.ndarray) and index.ndim == 1:
+                try:
+                    index = _range_to_slice(index)
+                except ValueError:
+                    pass
+                else:
+                    index = da.slicing.normalize_slice(index, length)
+        out.append(index)
+    return tuple(out)
+
+
+def _dask_oindex(x, indices):
+    """Perform outer indexing on dask array `x`, one dimension at a time.
+
+    It is assumed that `indices` is suitably normalised (no ellipsis, etc.)
+    """
+    axis = 0
+    for index in indices:
+        x = da.take(x, index, axis=axis)
+        # If axis wasn't dropped by a scalar index:
+        if not isinstance(index, Integral):
+            axis += 1
+    return x
+
+
+def dask_getitem(x, indices):
+    """Index a dask array, with N-D fancy index support and better performance.
+
+    This is a drop-in replacement for ``x[indices]`` that goes one further
+    by implementing "N-D fancy indexing" which is still unsupported in dask.
+    If `indices` contains multiple fancy indices, perform outer (`oindex`)
+    indexing. This behaviour deviates from NumPy, which performs the more
+    general (but also more obtuse) vectorized (`vindex`) indexing in this case.
+    See  NumPy `NEP 21`_, `dask #433`_ and `h5py #652`_ for more
+    details.
+
+    .. _NEP 21: http://www.numpy.org/neps/nep-0021-advanced-indexing.html
+    .. _dask #433: https://github.com/dask/dask/issues/433
+    .. _h5py #652: https://github.com/h5py/h5py/issues/652
+
+    In addition, this optimises performance by culling unnecessary nodes from
+    the dask graph after indexing, which makes it cheaper to compute if only a
+    small piece of the graph is needed, and by collapsing fancy indices in
+    `indices` to slices where possible (which also implies oindex semantics).
+    """
+    indices = _simplify_index(indices, x.shape)
+    try:
+        out = x[indices]
+    except NotImplementedError:
+        out = _dask_oindex(x, indices)
+    # dask does culling anyway as part of optimization, but it first calls
+    # ensure_dict, which copies all the keys, presumably to speed up the
+    # case where most keys are retained. A lazy indexer is normally used to
+    # fetch a small part of the data.
+    out.dask = dask.optimization.cull(out.dask, out.__dask_keys__())[0]
+    return out
+
+
+def _callable_name(f):
+    """Determine appropriate name for callable `f` (akin to function name)."""
+    try:
+        return f.__name__
+    except AttributeError:
+        if isinstance(f, partial):
+            return f.func.__name__
+        return f.__class__.__name__
+
 
 # -------------------------------------------------------------------------------------------------
 # -- CLASS :  LazyTransform
@@ -129,7 +259,7 @@ class LazyIndexer(object):
     dataset : :class:`h5py.Dataset` object or equivalent
         Underlying dataset or array object on which lazy indexing will be done.
         This can be any object with shape, dtype and __getitem__ members.
-    keep : tuple of int or slice or sequence of int or sequence of bool, optional
+    keep : NumPy index expression, optional
         First-stage index as a valid index or slice specification
         (supports arbitrary slicing or advanced indexing on any dimension)
     transforms : list of :class:`LazyTransform` objects or None, optional
@@ -215,7 +345,7 @@ class LazyIndexer(object):
 
         Parameters
         ----------
-        keep : tuple of int or slice or sequence of int or sequence of bool
+        keep : NumPy index expression
             Second-stage index as a valid index or slice specification
             (supports arbitrary slicing or advanced indexing on any dimension)
 
@@ -330,3 +460,167 @@ class LazyIndexer(object):
         """Type of data array after transformation, i.e. `self[:].dtype`."""
         return reduce(lambda dtype, transform: transform.dtype if transform.dtype is not None else dtype,
                       self.transforms, self._initial_dtype)
+
+
+class DaskLazyIndexer(object):
+    """Turn a dask Array into a LazyIndexer by computing it upon indexing.
+
+    The LazyIndexer wraps an underlying `dataset` in the form of a dask Array.
+    Upon first use, it applies a stored first-stage selection (`keep`) to the
+    array, followed by a series of `transforms`. All of these actions are lazy
+    and only update the dask graph of the `dataset`. Since these updates are
+    computed only on first use, there is minimal cost in constructing an
+    instance and immediately throwing it away again.
+
+    Second-stage selection occurs via a :meth:`__getitem__` call on this
+    object, which also triggers dask computation to return the final
+    :class:`numpy.ndarray` output. Both selection steps follow outer indexing
+    ("oindex") semantics, by indexing each dimension / axis separately.
+
+    Parameters
+    ----------
+    dataset : :class:`dask.Array`
+        The full dataset, from which a subset is chosen by `keep`
+    keep : NumPy index expression, optional
+        Index expression describing first-stage selection (e.g. as applied by
+        :meth:`katdal.DataSet.select`), with oindex semantics
+    transforms : sequence of function, signature ``array = f(array)``, optional
+        Transformations that are applied after indexing by `keep` but
+        before indexing on this object. Each transformation is a callable
+        that takes a dask array and returns another dask array.
+
+    Attributes
+    ----------
+    name : str
+        The name of the (full) underlying dataset, useful for reporting
+    dataset : :class:`dask.Array`
+        The dask array that is accessed by indexing (after applying `keep` and
+        `transforms`). It can be used directly to perform dask computations.
+    """
+    def __init__(self, dataset, keep=(), transforms=()):
+        self.name = getattr(dataset, 'name', '')
+        # Fancy indices can be mutable arrays, so take a copy to protect
+        # against the caller mutating the array before we apply it.
+        self.keep = copy.deepcopy(keep)
+        self._transforms = list(transforms)
+        self._orig_dataset = dataset
+        self._dataset = None
+        self._lock = threading.Lock()
+
+    @property
+    def transforms(self):
+        """Transformations that are applied after first-stage indexing."""
+        return self._transforms
+
+    @property
+    def dataset(self):
+        """Array after first-stage indexing and transformation."""
+        with self._lock:
+            if self._dataset is None:
+                dataset = dask_getitem(self._orig_dataset, self.keep)
+                for transform in self.transforms:
+                    dataset = transform(dataset)
+                self._dataset = dataset
+                self._orig_dataset = None
+            return self._dataset
+
+    def add_transform(self, transform):
+        """Add another transform to the end of the transform chain.
+
+        The `transform` is a callable that takes a dask array and returns
+        another dask array.
+        """
+        with self._lock:
+            if self._dataset is not None:
+                self._dataset = transform(self._dataset)
+            self._transforms.append(transform)
+
+    def __getitem__(self, keep):
+        """Extract a selected array from the underlying dataset.
+
+        This applies the given second-stage index on top of the current
+        dataset, which already has a first-stage index and optional transforms
+        applied to it. The indexer also finally stops being lazy and triggers
+        dask computation to arrive at the output array.
+
+        Both indexing stages perform "outer" indexing (aka oindex), which
+        indexes each dimension independently. This is especially relevant for
+        advanced or fancy indexing.
+
+        Parameters
+        ----------
+        keep : NumPy index expression
+            Second-stage index as a valid index or slice specification
+            (supports arbitrary slicing or advanced indexing on any dimension)
+
+        Returns
+        -------
+        out : :class:`numpy.ndarray`
+            Extracted output array (computed from the final dask version)
+        """
+        return self.get([self], keep)[0]
+
+    @classmethod
+    def get(cls, arrays, keep, out=None):
+        """Extract several arrays from the underlying dataset.
+
+        This is a variant of :meth:`__getitem__` that pulls from several arrays
+        jointly. This can be significantly more efficient if intermediate dask
+        nodes can be shared.
+
+        Parameters
+        ----------
+        arrays : list of :class:`DaskLazyIndexer`
+            Arrays to index
+        keep : NumPy index expression
+            Second-stage index as a valid index or slice specification
+            (supports arbitrary slicing or advanced indexing on any dimension)
+        out : list of :class:`np.ndarray`
+            If specified, output arrays in which to store results. It must be
+            the same length as `arrays` and each array must have the
+            appropriate shape and dtype.
+
+        Returns
+        -------
+        out : sequence of :class:`numpy.ndarray`
+            Extracted output array (computed from the final dask version)
+        """
+        kept = [dask_getitem(array.dataset, keep) for array in arrays]
+        # Workaround for https://github.com/dask/dask/issues/3595
+        # This is equivalent to da.compute(kept), but does not allocate
+        # excessive memory.
+        if out is None:
+            out = [np.empty(array.shape, array.dtype) for array in kept]
+        da.store(kept, out, lock=False)
+        return out
+
+    def __len__(self):
+        """Length operator."""
+        return self.shape[0]
+
+    def __iter__(self):
+        """Iterator."""
+        for index in range(len(self)):
+            yield self[index]
+
+    def __repr__(self):
+        """Short human-friendly string representation of indexer object."""
+        return "<katdal.{} '{}': shape {}, type {} at 0x{:x}>".format(
+            self.__class__.__name__, self.name, self.shape, self.dtype,
+            id(self))
+
+    def __str__(self):
+        """Verbose human-friendly string representation of indexer object."""
+        names = [self.name]
+        names += [_callable_name(transform) for transform in self.transforms]
+        return ' | '.join(names) + ' -> {} {}'.format(self.shape, self.dtype)
+
+    @property
+    def shape(self):
+        """Shape of array after first-stage indexing and transformation."""
+        return self.dataset.shape
+
+    @property
+    def dtype(self):
+        """Data type of array after first-stage indexing and transformation."""
+        return self.dataset.dtype

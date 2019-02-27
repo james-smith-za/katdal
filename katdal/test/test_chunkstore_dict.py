@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2017-2018, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2017-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,6 +15,7 @@
 ################################################################################
 
 """Tests for :py:mod:`katdal.chunkstore_dict`."""
+from __future__ import print_function, division, absolute_import
 
 from katdal.chunkstore_dict import DictChunkStore
 from katdal.test.test_chunkstore import ChunkStoreTestBase
@@ -23,3 +24,5 @@ from katdal.test.test_chunkstore import ChunkStoreTestBase
 class TestDictChunkStore(ChunkStoreTestBase):
     def setup(self):
         self.store = DictChunkStore(**vars(self))
+        # This store is prepopulated so missing chunks can't be checked
+        self.preloaded_chunks = True

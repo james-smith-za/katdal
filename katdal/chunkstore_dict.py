@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2017-2018, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2017-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,6 +15,7 @@
 ################################################################################
 
 """A store of chunks (i.e. N-dimensional arrays) based on a dict of arrays."""
+from __future__ import print_function, division, absolute_import
 
 from .chunkstore import ChunkStore, ChunkNotFound, BadChunk
 
@@ -36,20 +37,25 @@ class DictChunkStore(ChunkStore):
         self.arrays = kwargs
 
     def get_chunk(self, array_name, slices, dtype):
-        """See the docstring of :meth:`ChunkStore.get`."""
+        """See the docstring of :meth:`ChunkStore.get_chunk`."""
         chunk_name, shape = self.chunk_metadata(array_name, slices, dtype=dtype)
         with self._standard_errors(chunk_name):
             array = self.arrays[array_name]
             # Ensure that chunk is array (otherwise 0-dim array becomes number)
             chunk = array[slices] if slices != () else array
-        if dtype != chunk.dtype:
-            raise BadChunk('Chunk {!r}: requested dtype {} differs from '
-                           'actual dtype {}'
-                           .format(chunk_name, dtype, chunk.dtype))
+        if chunk.shape != shape or chunk.dtype != dtype:
+            raise BadChunk('Chunk {!r}: requested dtype {} and/or shape {} '
+                           'differs from expected dtype {} and shape {}'
+                           .format(chunk_name, chunk.dtype, chunk.shape,
+                                   dtype, shape))
         return chunk
 
+    def create_array(self, array_name):
+        if array_name not in self.arrays:
+            raise NotImplementedError
+
     def put_chunk(self, array_name, slices, chunk):
-        """See the docstring of :meth:`ChunkStore.put`."""
+        """See the docstring of :meth:`ChunkStore.put_chunk`."""
         self.chunk_metadata(array_name, slices, chunk=chunk)
         self.get_chunk(array_name, slices, chunk.dtype)[()] = chunk
 
