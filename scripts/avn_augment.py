@@ -23,7 +23,7 @@ option_parser.add_option("-s", "--snap",
                          dest="snap_file",
                          default=None,
                          help="Name of the snap file used to perform observation.")
-# Not using any options at this stage, just the arguments. May want more flexibility in future.
+
 (options, args) = option_parser.parse_args()
 
 if len(args) != 2:
