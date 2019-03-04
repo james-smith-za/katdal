@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,14 +15,19 @@
 ################################################################################
 
 """Base class for accessing a visibility data set."""
+from __future__ import print_function, division, absolute_import
+from builtins import zip, object
+from past.builtins import basestring
 
 import time
 import logging
+import numbers
 
 import numpy as np
 
 import katpoint
 from katpoint import is_iterable, rad2deg
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,21 +42,6 @@ class WrongVersion(Exception):
 
 class BrokenFile(Exception):
     """Data set could not be loaded because file is inconsistent or misses critical bits."""
-
-
-def array_equal(a1, a2):
-    """True if two arrays have the same shape and elements, False otherwise.
-
-    This is meant to be identical to :func:`numpy.array_equal` but should also
-    work for variable-sized arrays containing strings. See the discussion at
-    http://mail.scipy.org/pipermail/numpy-discussion/2007-February/025967.html.
-
-    """
-    try:
-        return np.array_equal(a1, a2)
-    except AttributeError:
-        a1, a2 = np.asarray(a1), np.asarray(a2)
-        return (a1.shape == a2.shape) and np.all(a1 == a2)
 
 
 class Subarray(object):
@@ -78,8 +68,9 @@ class Subarray(object):
     """
 
     def __init__(self, ants, corr_products):
-        self.corr_products = np.array([(inpA.lower(), inpB.lower()) for inpA, inpB in corr_products])
-        # Extract all inputs (and associated antennas) from correlation product list
+        self.corr_products = np.array([(inpA.lower(), inpB.lower())
+                                       for inpA, inpB in corr_products])
+        # Extract all inputs (and associated antennas) from corr product list
         self.inputs = sorted(set(np.ravel(self.corr_products)))
         input_ants = set([inp[:-1] for inp in self.inputs])
         # Only keep antennas that are involved in correlation products
@@ -88,12 +79,21 @@ class Subarray(object):
     def __repr__(self):
         """Short human-friendly string representation of subarray object."""
         return "<katdal.Subarray antennas=%d inputs=%d corrprods=%d at 0x%x>" % \
-               (len(self.ants), len(self.inputs), len(self.corr_products), id(self))
+               (len(self.ants), len(self.inputs), len(self.corr_products),
+                id(self))
+
+    @property
+    def _description(self):
+        """Complete string representation, used internally for comparisons."""
+        ants = '\n'.join(ant.description for ant in self.ants)
+        corrprods = ' '.join('%s,%s' % (inpA, inpB)
+                             for inpA, inpB in self.corr_products)
+        return '\n'.join((ants, corrprods))
 
     def __eq__(self, other):
         """Equality comparison operator."""
-        return isinstance(other, Subarray) and array_equal(self.corr_products, other.corr_products) and \
-            array_equal(self.inputs, other.inputs) and array_equal(self.ants, other.ants)
+        return self._description == (other._description
+                                     if isinstance(other, Subarray) else other)
 
     def __ne__(self, other):
         """Inequality comparison operator."""
@@ -101,78 +101,12 @@ class Subarray(object):
 
     def __lt__(self, other):
         """Less-than comparison operator (needed for sorting and np.unique)."""
-        return not isinstance(other, Subarray) or \
-            tuple(self.corr_products.ravel()) < tuple(other.corr_products.ravel())
+        return self._description < (other._description
+                                    if isinstance(other, Subarray) else other)
 
-
-class SpectralWindow(object):
-    """Spectral window specification.
-
-    A spectral window is determined by the number of frequency channels produced
-    by the correlator and their corresponding centre frequencies, as well as the
-    channel width. The channels are assumed to be regularly spaced and to be the
-    result of either lower-sideband downconversion (channel frequencies
-    decreasing with channel index) or upper-sideband downconversion (frequencies
-    increasing with index). For further information the receiver band and
-    correlator product names are also available.
-
-    Parameters
-    ----------
-    centre_freq : float
-        Centre frequency of spectral window, in Hz
-    channel_width : float
-        Bandwidth of each frequency channel, in Hz
-    num_chans : int
-        Number of frequency channels
-    product : string, optional
-        Name of data product / correlator mode
-    sideband : {-1, +1}, optional
-        Type of downconversion (-1 => lower sideband, +1 => upper sideband)
-    band : {'L', 'UHF', 'S', 'X', 'Ku'}, optional
-        Name of receiver / band
-
-    Attributes
-    ----------
-    channel_freqs : array of float, shape (*F*,)
-        Centre frequency of each frequency channel (assuming LSB mixing), in Hz
-
-    """
-
-    def __init__(self, centre_freq, channel_width, num_chans, product=None,
-                 sideband=-1, band='L'):
-        self.centre_freq = centre_freq
-        self.channel_width = channel_width
-        self.num_chans = num_chans
-        self.product = product if product is not None else ''
-        self.sideband = sideband
-        self.band = band
-        # Don't subtract half a channel width as channel 0 is centred on 0 Hz in baseband
-        self.channel_freqs = centre_freq + sideband * channel_width * (np.arange(num_chans) - num_chans / 2)
-
-    def __repr__(self):
-        """Short human-friendly string representation of spectral window object."""
-        return "<katdal.SpectralWindow %s-band product=%s centre=%.3f MHz " \
-               "bandwidth=%.3f MHz channels=%d at 0x%x>" % \
-               (self.band if self.band else 'unknown',
-                repr(self.product) if self.product else 'unknown',
-                self.centre_freq / 1e6, self.num_chans * self.channel_width / 1e6,
-                self.num_chans, id(self))
-
-    def __eq__(self, other):
-        """Equality comparison operator."""
-        return isinstance(other, SpectralWindow) and self.product == other.product and \
-            array_equal(self.centre_freq, other.centre_freq) and \
-            array_equal(self.channel_width, other.channel_width) and \
-            array_equal(self.num_chans, other.num_chans) and \
-            array_equal(self.channel_freqs, other.channel_freqs)
-
-    def __ne__(self, other):
-        """Inequality comparison operator."""
-        return not (self == other)
-
-    def __lt__(self, other):
-        """Less-than comparison operator (needed for sorting and np.unique)."""
-        return not isinstance(other, SpectralWindow) or tuple(self.channel_freqs) < tuple(other.channel_freqs)
+    def __hash__(self):
+        """Base hash on description string, just like equality operator."""
+        return hash(self._description)
 
 
 def _robust_target(description):
@@ -184,6 +118,34 @@ def _robust_target(description):
     except ValueError:
         logger.warning("Invalid target description '%s' - replaced with dummy target" % (description,))
         return katpoint.Target('Nothing, special')
+
+
+def _selection_to_list(names, **groups):
+    """Normalise string of comma-separated names or sequence of names / objects.
+
+    Parameters
+    ----------
+    names : string / object or sequence of strings / objects
+        A string of comma-separated names or a sequence of names / objects
+    groups : dict, optional
+        Each extra keyword is the name of a predefined list of names / objects
+
+    Returns
+    -------
+    list : list of strings / objects
+        List of names / objects
+    """
+    if isinstance(names, basestring):
+        if not names:
+            return []
+        elif names in groups:
+            return list(groups[names])
+        else:
+            return [name.strip() for name in names.split(',')]
+    elif is_iterable(names):
+        return list(names)
+    else:
+        return [names]
 
 
 DEFAULT_SENSOR_PROPS = {
@@ -397,7 +359,7 @@ class DataSet(object):
         self.channels = np.empty(0, dtype=np.int)
 
         self.dump_period = 0.0
-        self.sensor = None
+        self.sensor = {}
         self.catalogue = katpoint.Catalogue()
         self.start_time = katpoint.Timestamp(0.0)
         self.end_time = katpoint.Timestamp(0.0)
@@ -449,7 +411,7 @@ class DataSet(object):
         # Now add dynamic information, which depends on the current selection criteria
         descr += ['-------------------------------------------------------------------------------',
                   'Data selected according to the following criteria:']
-        for k, v in self._selection.iteritems():
+        for k, v in sorted(self._selection.items()):
             descr.append('  %s=%s' % (k, ("'%s'" % (v,)) if isinstance(v, basestring) else v))
         descr.append('-------------------------------------------------------------------------------')
         descr.append('Shape: (%d dumps, %d channels, %d correlation products) => Size: %s' %
@@ -524,10 +486,10 @@ class DataSet(object):
                max_freq < 1.6 * model.max_freq_MHz:
                 new_min_freq = min(min_freq, model.min_freq_MHz)
                 new_max_freq = max(max_freq, model.max_freq_MHz)
-                logger.warn('Extending flux density model frequency range of '
-                            '%r from %d-%d MHz to %d-%d MHz', target.name,
-                            model.min_freq_MHz, model.max_freq_MHz,
-                            new_min_freq, new_max_freq)
+                logger.warning('Extending flux density model frequency range '
+                               'of %r from %d-%d MHz to %d-%d MHz', target.name,
+                               model.min_freq_MHz, model.max_freq_MHz,
+                               new_min_freq, new_max_freq)
                 model.min_freq_MHz = new_min_freq
                 model.max_freq_MHz = new_max_freq
 
@@ -555,7 +517,7 @@ class DataSet(object):
         if time_keep is not None:
             self._time_keep = time_keep
             # Ensure that sensor cache gets updated time selection
-            if self.sensor is not None:
+            if self.sensor:
                 self.sensor._set_keep(self._time_keep)
         if freq_keep is not None:
             self._freq_keep = freq_keep
@@ -642,15 +604,17 @@ class DataSet(object):
             Select antennas by name or object
         inputs : string or sequence of strings, optional
             Select inputs by label
-        pol : {'H', 'V', 'HH', 'VV', 'HV', 'VH'}, optional
-            Select polarisation term
+        pol : string or sequence of strings
+              {'H', 'V', 'HH', 'VV', 'HV', 'VH'}, optional
+            Select polarisation terms
 
         weights : 'all' or string or sequence of strings, optional
             List of names of weights to be multiplied together, as a sequence
             or string of comma-separated names (combine all weights by default)
         flags : 'all' or string or sequence of strings, optional
             List of names of flags that will be OR'ed together, as a sequence
-            or string of comma-separated names (use all flags by default)
+            or string of comma-separated names (use all flags by default). An
+            empty string or sequence discards all flags.
 
         reset : {'auto', '', 'T', 'F', 'B', 'TF', 'TB', 'FB', 'TFB'}, optional
             Remove existing selections on specified dimensions before applying
@@ -720,7 +684,7 @@ class DataSet(object):
         # Now add the new selection criteria to the list (after the existing ones were kept or culled)
         self._selection.update(kwargs)
 
-        for k, v in self._selection.iteritems():
+        for k, v in self._selection.items():
             # Selections that affect time axis
             if k == 'dumps':
                 if np.asarray(v).dtype == np.bool:
@@ -735,12 +699,12 @@ class DataSet(object):
                 self._time_keep &= (self.sensor.timestamps[:] >= start_time)
                 self._time_keep &= (self.sensor.timestamps[:] <= end_time)
             elif k in ('scans', 'compscans'):
-                scans = v if is_iterable(v) else [l.strip() for l in v.split(',')] if isinstance(v, basestring) else [v]
+                scans = _selection_to_list(v)
                 scan_keep = np.zeros(len(self._time_keep), dtype=np.bool)
                 scan_sensor = self.sensor.get('Observation/scan_state' if k == 'scans' else 'Observation/label')
                 scan_index_sensor = self.sensor.get('Observation/%s_index' % (k[:-1],))
                 for scan in scans:
-                    if isinstance(scan, int):
+                    if isinstance(scan, numbers.Integral):
                         scan_keep |= (scan_index_sensor == scan)
                     elif scan[0] == '~':
                         scan_keep |= ~(scan_sensor == scan[1:])
@@ -752,7 +716,7 @@ class DataSet(object):
                 target_keep = np.zeros(len(self._time_keep), dtype=np.bool)
                 target_index_sensor = self.sensor.get('Observation/target_index')
                 for t in targets:
-                    if isinstance(t, int):
+                    if isinstance(t, numbers.Integral):
                         target_index = t
                     elif t not in self.catalogue:
                         # Warn here, in case the user gets the target subtly wrong and wonders why it is not selected
@@ -798,27 +762,39 @@ class DataSet(object):
                         cp_keep[v] = True
                         self._corrprod_keep &= cp_keep
             elif k == 'ants':
-                ants = [a.strip() for a in v.split(',')] if isinstance(v, basestring) else v if is_iterable(v) else [v]
+                ants = _selection_to_list(v)
                 ant_names = [(ant.name if isinstance(ant, katpoint.Antenna) else ant) for ant in ants]
                 self._corrprod_keep &= [(inpA[:-1] in ant_names and inpB[:-1] in ant_names)
                                         for inpA, inpB in self.subarrays[self.subarray].corr_products]
             elif k == 'inputs':
-                inps = [i.strip() for i in v.split(',')] if isinstance(v, basestring) else v if is_iterable(v) else [v]
+                inps = _selection_to_list(v)
                 self._corrprod_keep &= [(inpA in inps and inpB in inps)
                                         for inpA, inpB in self.subarrays[self.subarray].corr_products]
             elif k == 'pol':
-                polAB = v.lower()
-                polAB = polAB * 2 if polAB in ('h', 'v', 'l', 'r') else polAB
-                self._corrprod_keep &= [(inpA[-1] == polAB[0] and inpB[-1] == polAB[1])
-                                        for inpA, inpB in self.subarrays[self.subarray].corr_products]
+                pols = _selection_to_list(v)
+                # Lower case and strip out empty strings
+                pols = [i.lower() for i in pols if i]
+
+                # Proceed if we have a selection
+                if len(pols) > 0:
+                    # If given a selection assume we keep nothing
+                    keep = np.zeros(self._corrprod_keep.shape, dtype=np.bool)
+
+                    # or separate polarisation selections together
+                    for polAB in pols:
+                        polAB = polAB * 2 if polAB in ('h', 'v', 'l', 'r') else polAB
+                        keep |= [(inpA[-1] == polAB[0] and inpB[-1] == polAB[1])
+                                 for inpA, inpB in self.subarrays[self.subarray].corr_products]
+
+                    # and into final corrprod selection
+                    self._corrprod_keep &= keep
+
             # Selections that affect weights and flags
             elif k == 'weights':
                 self._weights_keep = v
             elif k == 'flags':
                 self._flags_keep = v
 
-        # Ensure that updated selections make their way to sensor cache and potentially underlying datasets
-        self._set_keep(self._time_keep, self._freq_keep, self._corrprod_keep, self._weights_keep, self._flags_keep)
         # Update the relevant data members based on selection made
         # These would all be more efficient as properties, but at the expense of extra lines of code...
         self.shape = (self._time_keep.sum(), self._freq_keep.sum(), self._corrprod_keep.sum())
@@ -834,6 +810,10 @@ class DataSet(object):
         self.inputs = sorted(set(np.ravel(self.corr_products)))
         input_ants = set([inp[:-1] for inp in self.inputs])
         self.ants = [ant for ant in self.subarrays[self.subarray].ants if ant.name in input_ants]
+        # Ensure that updated selections make their way to sensor cache, as
+        # well as any underlying datasets and data lazy indexers that need it
+        self._set_keep(self._time_keep, self._freq_keep, self._corrprod_keep,
+                       self._weights_keep, self._flags_keep)
         # Figure out which scans, compscans and targets are included in selection
         self.scan_indices = sorted(set(self.sensor['Observation/scan_index']))
         self.compscan_indices = sorted(set(self.sensor['Observation/compscan_index']))
@@ -900,7 +880,7 @@ class DataSet(object):
         """
         compscans = self.compscan_indices[:]
         # This is the active selection onto which compscan selection will be added
-        preselection = dict(self._selection.items())
+        preselection = dict(list(self._selection.items()))
         # This will ensure that the original selection is properly restored
         preselection['reset'] = 'T'
         old_timekeep = self._time_keep.copy()

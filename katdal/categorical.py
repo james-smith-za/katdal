@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,6 +15,8 @@
 ################################################################################
 
 """Container for categorical (i.e. non-numerical) sensor data and related tools."""
+from __future__ import print_function, division, absolute_import
+from builtins import zip, range, object
 
 import collections
 
@@ -167,6 +169,11 @@ def unique_in_order(elements, return_inverse=False):
         reconstruct original sequence
 
     """
+    # In Python 3, each iteration over a np.ndarray creates new objects. This
+    # can lead to problems if there are NaNs, because NaN != NaN, so we rely
+    # on the behaviour of dict that first checks object identity. We thus
+    # force to list at the start to get consistent object identities.
+    elements = list(elements)
     unique_elements, inverse = [], []
     try:
         # Surprisingly, a zero generator like itertools.repeat does not buy you anything
@@ -184,7 +191,7 @@ def unique_in_order(elements, return_inverse=False):
     else:
         for index, element in enumerate(lookup):
             lookup[element] = index
-        unique_elements = lookup.keys()
+        unique_elements = list(lookup.keys())
         if return_inverse:
             inverse = [lookup[element] for element in elements]
     # Force inverse to int dtype in case it is an empty array (float otherwise)
@@ -307,16 +314,23 @@ class CategoricalData(object):
         """
         if isinstance(key, slice):
             # Convert slice notation to the corresponding sequence of dump indices
-            key = range(*key.indices(self.events[-1]))
+            key = list(range(*key.indices(self.events[-1])))
         # Convert sequence of bools (one per dump) to sequence of indices where key is True
         elif np.asarray(key).dtype == np.bool and len(np.asarray(key)) == self.events[-1]:
             key = np.nonzero(key)[0]
         indices = self._lookup(key)
         # Interpret indices as either a sequence of ints or a single int
         try:
-            return np.array([self.unique_values[index] for index in indices])
+            values = [self.unique_values[index] for index in indices]
         except TypeError:
             return self.unique_values[indices]
+        # Handle empty selections specially to ensure proper dtype and shape
+        if not values:
+            all_possible_values = np.array(self.unique_values)
+            dtype = all_possible_values.dtype
+            shape = all_possible_values.shape
+            return np.empty((0,) + shape[1:], dtype)
+        return np.array(values)
 
     def __repr__(self):
         """Short human-friendly string representation of categorical data object."""

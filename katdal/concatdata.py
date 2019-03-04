@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,9 +15,12 @@
 ################################################################################
 
 """Class for concatenating visibility data sets."""
+from __future__ import print_function, division, absolute_import
+from builtins import zip, range
 
 import os.path
 import itertools
+from functools import reduce
 
 import numpy as np
 
@@ -122,7 +125,10 @@ class ConcatenatedLazyIndexer(LazyIndexer):
         shape_tails = [len(np.atleast_1d(np.arange(dim_len)[dim_keep]))
                        for dim_keep, dim_len in zip(keep[1:], self._initial_shape[1:])]
         indexer_starts = np.cumsum([0] + [len(indexer) for indexer in self.indexers[:-1]])
-        find_indexer = lambda index: indexer_starts.searchsorted(index, side='right') - 1
+
+        def find_indexer(index):
+            return indexer_starts.searchsorted(index, side='right') - 1
+
         # Interpret selection on first dimension, along which data will be concatenated
         if np.isscalar(keep_head):
             # If selection is a scalar, pass directly to appropriate indexer (after removing offset)
@@ -189,7 +195,7 @@ class ConcatenatedLazyIndexer(LazyIndexer):
         dtypes = set([indexer.dtype for indexer in self.indexers])
         if len(dtypes) == 1:
             return dtypes.pop()
-        elif np.all([np.issubdtype(dtype, np.str) for dtype in dtypes]):
+        elif np.all([np.issubdtype(dtype, np.string_) for dtype in dtypes]):
             # Strings of different lengths have different dtypes (e.g. '|S1' vs '|S10') but can be safely concatenated
             return np.dtype('|S%d' % (max([dt.itemsize for dt in dtypes]),))
         else:
@@ -268,8 +274,6 @@ class ConcatenatedSensorData(SensorData):
         """True if sensor has at least one data point."""
         return any(bool(sd) for sd in self._data)
 
-    __nonzero__ = __bool__
-
 
 def _calc_dummy(cache, name):
     """Dummy virtual sensor that returns NaNs."""
@@ -305,11 +309,11 @@ class ConcatenatedSensorCache(SensorCache):
         # The main point is to discover the name and dtype of each known sensor
         actual, virtual, self.props = {}, {}, {}
         for cache in caches:
-            actual.update(cache.iteritems())
+            actual.update(cache.items())
             virtual.update(cache.virtual)
             self.props.update(cache.props)
         # Pad out actual sensors on each cache (replace with default sensor values where missing)
-        for name, sensor_data in actual.iteritems():
+        for name, sensor_data in actual.items():
             for cache in caches:
                 if name not in cache:
                     # The original "raw" sensor name can differ from the cache
@@ -425,7 +429,7 @@ class ConcatenatedSensorCache(SensorCache):
             # Look up properties associated with this specific sensor
             props = self.props.get(name, {})
             # Look up properties associated with this class of sensor
-            for key, val in self.props.iteritems():
+            for key, val in self.props.items():
                 if key[0] == '*' and name.endswith(key[1:]):
                     props.update(val)
             # Any properties passed directly to this method takes precedence
@@ -498,13 +502,13 @@ class ConcatenatedDataSet(DataSet):
         self.observer = ','.join(unique_in_order([d.observer for d in datasets]))
         self.description = ' | '.join(unique_in_order([d.description for d in datasets]))
         self.experiment_id = ','.join(unique_in_order([d.experiment_id for d in datasets]))
-        obs_params = unique_in_order(reduce(lambda x, y: x + y, [d.obs_params.keys() for d in datasets]))
+        obs_params = unique_in_order(reduce(lambda x, y: x + y, [list(d.obs_params.keys()) for d in datasets]))
         for param in obs_params:
             values = [d.obs_params.get(param, '') for d in datasets]
             # If all values are the same, extract the unique value from the list; otherwise keep the list
             # The itertools.groupby function should work on any value, even unhashable and unorderable ones
             self.obs_params[param] = values[0] if len([k for k in itertools.groupby(values)]) == 1 else values
-        rx_ants = unique_in_order(reduce(lambda x, y: x + y, [d.receivers.keys() for d in datasets]))
+        rx_ants = unique_in_order(reduce(lambda x, y: x + y, [list(d.receivers.keys()) for d in datasets]))
         for ant in rx_ants:
             rx = [d.receivers.get(ant, '') for d in datasets]
             self.receivers[ant] = rx[0] if len([k for k in itertools.groupby(rx)]) == 1 else rx
@@ -580,7 +584,7 @@ class ConcatenatedDataSet(DataSet):
             for n, d in enumerate(self.datasets):
                 d._set_keep(time_keep=self._time_keep[self._segments[n]:self._segments[n + 1]])
             # Ensure that sensor cache gets updated time selection
-            if self.sensor is not None:
+            if self.sensor:
                 self.sensor._set_keep(self._time_keep)
         if freq_keep is not None:
             self._freq_keep = freq_keep

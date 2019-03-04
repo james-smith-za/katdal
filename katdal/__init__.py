@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -14,32 +14,40 @@
 # limitations under the License.
 ################################################################################
 
-"""KAT data access library to interact with HDF5 and MeasurementSet files.
+"""Data access library for data sets in the MeerKAT Visibility Format (MVF).
 
 Overview
 --------
 
-This module serves as a data access library to the HDF5 files produced by the
-Fringe Finder and KAT-7 data capturing systems. It uses memory carefully,
-allowing files to be inspected and partially loaded into memory. Data sets may
-be concatenated and split via a flexible selection mechanism. In addition, it
-provides a script to convert these HDF5 files to CASA MeasurementSets.
+This module serves as a data access library to interact with the chunk stores
+and HDF5 files produced by the MeerKAT radio telescope and its predecessors
+(KAT-7 and Fringe Finder). It uses memory carefully, allowing data sets to be
+inspected and partially loaded into memory. Data sets may be concatenated and
+split via a flexible selection mechanism. In addition, it provides a script to
+convert these data sets to CASA MeasurementSets.
 
 Quick Tutorial
 --------------
 
-Open any HDF5 file through a single function to obtain a data set object::
+Open any data set through a single function to obtain a data set object::
 
   import katdal
   d = katdal.open('1234567890.h5')
 
-This automatically determines whether it is a version 1 (FF) or version 2
-(KAT-7) file. Multiple files (even of different versions) may also be
-concatenated together (as long as they have the same dump rate)::
+This automatically determines the version and storage location of the data set.
+The versions roughly map to the various instruments::
+
+  - v1 : Fringe Finder (HDF5 file)
+  - v2 : KAT-7 (HDF5 file)
+  - v3 : MeerKAT (HDF5 file)
+  - v4 : MeerKAT (chunk store based on objects in Ceph)
+
+Multiple data sets (even of different versions) may also be concatenated
+together (as long as they have the same dump rate)::
 
   d = katdal.open(['1234567890.h5', '1234567891.h5'])
 
-Inspect the contents of the file by printing the object::
+Inspect the contents of the data set by printing the object::
 
   print d
 
@@ -172,11 +180,11 @@ frequency dimension by `d.channel_freqs` and the correlation product dimension
 by `d.corr_products`.
 
 Another key concept in the data set object is that of *sensors*. These are named
-time series of arbritrary data that are either loaded from the file (*actual*
-sensors) or calculated on the fly (*virtual* sensors). Both variants are
-accessed through the *sensor cache* (available as `d.sensor`) and cached there
-after the first access. The data set object also provides convenient properties
-to expose commonly-used sensors, as shown in the plot example below::
+time series of arbritrary data that are either loaded from the data set
+(*actual* sensors) or calculated on the fly (*virtual* sensors). Both variants
+are accessed through the *sensor cache* (available as `d.sensor`) and cached
+there after the first access. The data set object also provides convenient
+properties to expose commonly-used sensors, as shown in the plot example below::
 
   import matplotlib.pyplot as plt
   plt.plot(d.az, d.el, 'o')
@@ -210,34 +218,24 @@ available at `d.catalogue`, and the original HDF5 file is still accessible via
 a back door installed at `d.file` in the case of a single-file data set.
 
 """
+from __future__ import print_function, division, absolute_import
+from future import standard_library
+standard_library.install_aliases()  # noqa: E402
+from past.builtins import basestring
 
 import logging as _logging
+import urllib.parse
 
+from .datasources import open_data_source
 from .dataset import DataSet, WrongVersion
-from .lazy_indexer import LazyTransform
+from .spectral_window import SpectralWindow
+from .lazy_indexer import LazyTransform, dask_getitem
 from .concatdata import ConcatenatedDataSet
 from .h5datav1 import H5DataV1
 from .h5datav2 import H5DataV2
 from .h5datav2_5 import H5DataV2_5
 from .h5datav3 import H5DataV3
-from .sensordata import _sensor_completer
-
-
-# Clean up top-level namespace a bit
-_dataset, _concatdata, _sensordata = dataset, concatdata, sensordata
-_h5datav1, _h5datav2, _h5datav2_5, _h5datav3 = h5datav1, h5datav2, h5datav2_5, h5datav3
-_categorical, _lazy_indexer = categorical, lazy_indexer
-del dataset, concatdata, h5datav1, h5datav2, h5datav2_5, h5datav3, sensordata, categorical, lazy_indexer
-
-# Attempt to register custom IPython tab completer for sensor cache name lookups (only when run from IPython shell)
-try:
-    # IPython 0.11 and above
-    _ip = get_ipython()
-except NameError:
-    # IPython 0.10 and below (or normal Python shell)
-    _ip = __builtins__.get('__IPYTHON__')
-if hasattr(_ip, 'set_hook'):
-    _ip.set_hook('complete_command', _sensor_completer, re_key=r"(?:.*\=)?(.+?)\[")
+from .visdatav4 import VisibilityDataV4
 
 
 # Setup library logger and add a print-like handler used when no logging is configured
@@ -246,6 +244,7 @@ class _NoConfigFilter(_logging.Filter):
 
     def filter(self, record):
         return 1 if not _logging.root.handlers else 0
+
 
 _no_config_handler = _logging.StreamHandler()
 _no_config_handler.setFormatter(_logging.Formatter(_logging.BASIC_FORMAT))
@@ -330,7 +329,13 @@ def open(filename, ref_ant='', time_offset=0.0, **kwargs):
     filenames = [filename] if isinstance(filename, basestring) else filename
     datasets = []
     for f in filenames:
-        dataset = _file_action('__call__', f, ref_ant, time_offset, **kwargs)
+        # V4 RDB file or live telstate with optional URL-style query string
+        parsed = urllib.parse.urlsplit(f)
+        if parsed.path.endswith('.rdb') or parsed.scheme != '':
+            dataset = VisibilityDataV4(open_data_source(f, **kwargs),
+                                       ref_ant, time_offset, **kwargs)
+        else:
+            dataset = _file_action('__call__', f, ref_ant, time_offset, **kwargs)
         datasets.append(dataset)
     return datasets[0] if isinstance(filename, basestring) else \
         ConcatenatedDataSet(datasets)

@@ -11,12 +11,22 @@ import katpoint
 
 # Set up option parser
 from optparse import OptionParser
-option_parser = OptionParser(usage="python %prog [options] h5filename csvfilename pmodlfilename")
+option_parser = OptionParser(usage="python %prog h5filename csvfilename [options]")
+pmodl_filename = "mdlpo.ctl"
+option_parser.add_option("-p", "--pmodl",
+                         action="store",
+                         dest="pmodl_file",
+                         default=pmodl_filename,
+                         help="Name of pointing model file. Default: %s" % pmodl_filename)
+option_parser.add_option("-s", "--snap",
+                         action="store",
+                         dest="snap_file",
+                         default=None,
+                         help="Name of the snap file used to perform observation.")
 
-# Not using any options at this stage, just the arguments. May want more flexibility in future.
 (options, args) = option_parser.parse_args()
 
-if not (len(args) == 3 or len(args) == 2):
+if len(args) != 2:
     option_parser.error("Wrong number of arguments - two or three filenames expected, %d arguments received." %
                         (len(args)))
 
@@ -150,12 +160,12 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # This is an optional thing so it's probably better just to put it in a try .. except block.
     # Later on I might decide to make it mandatory to run the script.
     try:
-        pmodl_file = open(args[2])
-    except (IOError, IndexError):
-        print "No pointing model file provided (or error in opening file). Using pmodel recorded in the h5 file."
+        pmodl_file = open(options.pmodl_file)
+    except (IOError):
+        print "Error in opening %s. Using zero pmodel." % options.pmodl_file
         pmodl_file = None
     else:
-        print "Pointing model file provided, will overwrite pointing model in the h5 file."
+        print "Using provided pointing model file %s." % options.pmodl_file
 
     # Miscellaneous info about the file printed for the user's convenience:
     timestamps = h5file["Data/Timestamps"]
@@ -364,7 +374,7 @@ with h5py.File(name=args[0], mode='r+') as h5file:
         print "\nUpper bound: %d." % pos_upper_index
         print "CSV upper index: %.2f\tH5file upper index: %.2f" % \
               (csv_file["Timestamp"][pos_upper_index] / 1000.0, rf_end_time)
-        print "Position data extens to %.2f seconds %s RF data." % \
+        print "Position data extends to %.2f seconds %s RF data." % \
               (np.abs(csv_file["Timestamp"][pos_upper_index] / 1000.0 - rf_end_time),
                "after" if adjust_end else "before")
     except ValueError:
@@ -377,7 +387,6 @@ with h5py.File(name=args[0], mode='r+') as h5file:
 
     # Unfortunately no elegant way to do this as far as I can tell.
     target_dset = []
-    activity_dset = []
 
     azim_req_pointm_pos_dset = []
     azim_des_pointm_pos_dset = []
@@ -399,29 +408,17 @@ with h5py.File(name=args[0], mode='r+') as h5file:
     # Antenna name has to be ant1, not Kuntunse. This refers to the reference antenna in the array, which is just
     # ant1 because the array is only one antenna big.
     pmodl_set = fs_to_kp_pointing_model(pmodl_file)
+    # TODO: This should probably be generic... but one more config file is confusing I guess and it's temporary.
     antenna_str = "ant1, 5:45:2.48, -0:18:17.92, 116, 32.0, 0 0 0, %s" % (pmodl_set[0])
     pmodl_set = np.array(pmodl_set[1:]).transpose()
     del h5file["MetaData/Configuration/Antennas/ant1/pointing-model-params"]
     print write_dataset("pointing-model-params", h5file["MetaData/Configuration/Antennas/ant1"], pmodl_set,
                         attributes={"description": "Pointing model retrieved from Field System mdlpo.ctl file."})
-    #config_group["Antennas/ant1"].attrs["description"] = antenna_str
+    # config_group["Antennas/ant1"].attrs["description"] = antenna_str # TODO Don't know why this is commented out...
     antenna = katpoint.Antenna(antenna_str)
     print antenna.pointing_model
-    activity = "slew"
-
-    target = raw_input("Enter target in katpoint string format:\n(name, radec, 00:00:00.00, 00:00:00.00)\n")
-    target_dset.append((float(csv_file["Timestamp"][pos_lower_index]) / 1000.0, target, "nominal"))
-    print "Writing target data..."
-    target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
-    print write_dataset("target", antenna_sensor_group, data=target_dset, attributes={
-                         "description": "Current target",
-                         "name": "target",
-                         "type": "string",
-                         "units": ""})
 
     print "Reading position data from csv file into memory..."
-    activity_dset.append((csv_file["Timestamp"][pos_lower_index] / 1000.0, "slew", "nominal"))
-
     sample_rate = 1.0 / (float(csv_file["Timestamp"][1] - csv_file["Timestamp"][0]) / 1000)
 
     for i in range(0, len(timestamp_array), 2 * int(sample_rate)):  # Down-sample to approx. 1 per 2 seconds.
@@ -471,30 +468,45 @@ with h5py.File(name=args[0], mode='r+') as h5file:
                                            np.radians(csv_file["Azim actual position"][pos_lower_index + i]),
                                            np.radians(csv_file["Elev actual position"][pos_lower_index + i]))[1]),
                                        "nominal"))
-
-        req_target = katpoint.construct_azel_target(csv_file["Azim req position"][pos_lower_index + i],
-                                                    csv_file["Elev req position"][pos_lower_index + i])
-        req_target.antenna = antenna
-        actual_target = katpoint.construct_azel_target(csv_file["Azim actual position"][pos_lower_index + i],
-                                                       csv_file["Elev actual position"][pos_lower_index + i])
-        actual_target.antenna = antenna
-        if activity == "slew":
-            if actual_target.separation(req_target) < np.radians(0.09):  # a fifth of a HPBW
-                activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "scan", "nominal"))
-                activity = "scan"
-        else:
-            # if activity == "scan":
-            if actual_target.separation(req_target) > np.radians(1.0):  #  a HPBW
-                activity_dset.append((csv_file["Timestamp"][pos_lower_index + i] / 1000.0, "slew", "nominal"))
-                activity = "slew"
     del i
 
-    print "Writing activity data..."
-    activity_dset = np.array(activity_dset, dtype=[("timestamp", "<f8"), ("value", "S13"), ("status", "S7")])
-    print write_dataset("activity", antenna_sensor_group, data=activity_dset, attributes={
-                         "description": "Synthesised antenna behaviour label",
-                         "name": "activity",
-                         "type": "discrete",
+    target = None
+    if options.snap_file is not None:
+        try:
+            with open(options.snap_file) as snap_file:
+                print "Reading snap file to get activity..."
+                activity_dset = []
+                for line in snap_file:
+                    try:
+                        activity_dset.append((float(line.split(',')[0][1:]), line.split(',')[1], line.split(',')[2]))
+                    except ValueError:  # first element isn't a number.
+                        if "Katpoint target" in line:
+                            # If it so happens that the Katpoint target is in the file, we can skip asking the user.
+                            target = line[18:]
+                        else:
+                            pass
+                print "Writing activity data..."
+                activity_dset = np.array(activity_dset,
+                                         dtype=[("timestamp", "<f8"), ("value", "S13"), ("status", "S7")])
+                print write_dataset("activity", antenna_sensor_group, data=activity_dset, attributes={
+                    "description": "Synthesised antenna behaviour label",
+                    "name": "activity",
+                    "type": "discrete",
+                    "units": ""})
+        except IOError:
+            print "Specified snap file <%s> could not be opened. Skipping..." % options.snap_file
+    else:
+        print "No snap file specified, no activity dataset will be written."
+
+    if target is not None:
+        target = raw_input("Enter target in katpoint string format:\n(name, radec, 00:00:00.00, 00:00:00.00)\n")
+    target_dset.append((float(csv_file["Timestamp"][pos_lower_index]) / 1000.0, target, "nominal"))
+    print "Writing target data..."
+    target_dset = np.array(target_dset, dtype=[("timestamp", "<f8"), ("value", "S127"), ("status", "S7")])
+    print write_dataset("target", antenna_sensor_group, data=target_dset, attributes={
+                         "description": "Current target",
+                         "name": "target",
+                         "type": "string",
                          "units": ""})
 
     print "Writing requested azimuth..."

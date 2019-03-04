@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2011-2016, National Research Foundation (Square Kilometre Array)
+# Copyright (c) 2011-2019, National Research Foundation (Square Kilometre Array)
 #
 # Licensed under the BSD 3-Clause License (the "License"); you may not use
 # this file except in compliance with the License. You may obtain a copy
@@ -15,6 +15,8 @@
 ################################################################################
 
 """Data accessor class for HDF5 files produced by KAT-7 correlator."""
+from __future__ import print_function, division, absolute_import
+from builtins import zip, range
 
 import logging
 
@@ -22,11 +24,14 @@ import numpy as np
 import h5py
 import katpoint
 
-from .dataset import (DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow,
-                      DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target)
-from .sensordata import RecordSensorData, SensorCache
+from .dataset import (DataSet, WrongVersion, BrokenFile, Subarray,
+                      DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS,
+                      _robust_target, _selection_to_list)
+from .spectral_window import SpectralWindow
+from .sensordata import RecordSensorData, SensorCache, to_str
 from .categorical import CategoricalData, sensor_to_categorical
 from .lazy_indexer import LazyIndexer, LazyTransform
+from .flags import NAMES as FLAG_NAMES, DESCRIPTIONS as FLAG_DESCRIPTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +63,10 @@ def _calc_azel(cache, name, ant):
     cache[name] = sensor_data = katpoint.deg2rad(cache.get(real_sensor))
     return sensor_data
 
+
 VIRTUAL_SENSORS = dict(DEFAULT_VIRTUAL_SENSORS)
 VIRTUAL_SENSORS.update({'Antennas/{ant}/az': _calc_azel, 'Antennas/{ant}/el': _calc_azel})
 
-FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'detected_rfi',
-              'predicted_rfi', 'reserved6', 'reserved7')
-FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list',
-                     'flag based on live CAM information',
-                     'reserved - bit 3', 'RFI detected in the online system',
-                     'RFI predicted from space based pollutants',
-                     'reserved - bit 6', 'reserved - bit 7')
 WEIGHT_NAMES = ('precision',)
 WEIGHT_DESCRIPTIONS = ('visibility precision (inverse variance, i.e. 1 / sigma^2)',)
 
@@ -98,7 +97,9 @@ def get_single_value(group, name):
         Attribute or last value of dataset
 
     """
-    return group.attrs[name] if name in group.attrs else group[name][-1]
+    attrs = group.attrs
+    value = attrs[name] if name in attrs else group[name][-1]
+    return to_str(value)
 
 
 def dummy_dataset(name, shape, dtype, value):
@@ -180,10 +181,10 @@ class H5DataV2(DataSet):
         data_group, sensors_group, config_group = f['Data'], f['MetaData/Sensors'], f['MetaData/Configuration']
         markup_group = f['Markup']
         # Get observation script parameters, with defaults
-        for k, v in config_group['Observation'].attrs.iteritems():
+        for k, v in config_group['Observation'].items():
             # For KAT-7 (v2.1) data, strip the 'script_' prefix from most parameters
             k = k if self.version > '2.1' or k in ('script_name', 'script_arguments') else k[7:]
-            self.obs_params[str(k)] = v
+            self.obs_params[str(k)] = to_str(v)
         self.observer = self.obs_params.get('observer', '')
         self.description = self.obs_params.get('description', '')
         self.experiment_id = self.obs_params.get('experiment_id', '')
@@ -237,8 +238,8 @@ class H5DataV2(DataSet):
         self._flags = markup_group['flags'] if 'flags' in markup_group else \
             dummy_dataset('dummy_flags', shape=self._vis.shape[:-1], dtype=np.uint8, value=0)
         # Obtain flag descriptions from file or recreate default flag description table
-        self._flags_description = markup_group['flags_description'] if 'flags_description' in markup_group else \
-            np.array(zip(FLAG_NAMES, FLAG_DESCRIPTIONS))
+        self._flags_description = to_str(markup_group['flags_description'][:]) \
+            if 'flags_description' in markup_group else np.array(list(zip(FLAG_NAMES, FLAG_DESCRIPTIONS)))
         self._flags_select = np.array([0], dtype=np.uint8)
         self._flags_keep = 'all'
 
@@ -248,8 +249,8 @@ class H5DataV2(DataSet):
         self._weights = markup_group['weights'] if 'weights' in markup_group else \
             dummy_dataset('dummy_weights', shape=self._vis.shape[:-1], dtype=np.float32, value=1.0)
         # Obtain weight descriptions from file or recreate default weight description table
-        self._weights_description = markup_group['weights_description'] if 'weights_description' in markup_group else \
-            np.array(zip(WEIGHT_NAMES, WEIGHT_DESCRIPTIONS))
+        self._weights_description = to_str(markup_group['weights_description'][:]) \
+            if 'weights_description' in markup_group else np.array(list(zip(WEIGHT_NAMES, WEIGHT_DESCRIPTIONS)))
         self._weights_select = []
         self._weights_keep = 'all'
 
@@ -273,7 +274,7 @@ class H5DataV2(DataSet):
         # ------ Extract subarrays ------
 
         # By default, only pick antennas that were in use by the script
-        script_ants = config_group['Observation'].attrs['script_ants'].split(',')
+        script_ants = to_str(config_group['Observation'].attrs['script_ants']).split(',')
         self.ref_ant = script_ants[0] if not ref_ant else ref_ant
         # Original list of correlation products as pairs of input labels
         corrprods = get_single_value(config_group['Correlator'], 'bls_ordering')
@@ -288,7 +289,7 @@ class H5DataV2(DataSet):
             else:
                 logger.warning('Reapplied k7_capture baseline mask to fix unexpected number of baseline labels')
         # All antennas in configuration as katpoint Antenna objects
-        ants = [katpoint.Antenna(config_group['Antennas'][name].attrs['description'])
+        ants = [katpoint.Antenna(to_str(config_group['Antennas'][name].attrs['description']))
                 for name in config_group['Antennas']]
         self.subarrays = [Subarray(ants, corrprods)]
         self.sensor['Observation/subarray'] = CategoricalData(self.subarrays, [0, len(data_timestamps)])
@@ -335,7 +336,7 @@ class H5DataV2(DataSet):
             scan.events, scan.indices = scan.events[1:], scan.indices[1:]
             scan.events[0] = 0
         # Use labels to partition the data set into compound scans
-        label = sensor_to_categorical(markup_group['labels']['timestamp'], markup_group['labels']['label'],
+        label = sensor_to_categorical(markup_group['labels']['timestamp'], to_str(markup_group['labels']['label'][:]),
                                       data_timestamps, self.dump_period, **SENSOR_PROPS['Observation/label'])
         # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
         # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
@@ -345,7 +346,7 @@ class H5DataV2(DataSet):
         # ASSUMPTION: Number of scans >= number of labels (i.e. each label should introduce a new scan)
         scan.add_unmatched(label.events)
         self.sensor['Observation/scan_state'] = scan
-        self.sensor['Observation/scan_index'] = CategoricalData(range(len(scan)), scan.events)
+        self.sensor['Observation/scan_index'] = CategoricalData(list(range(len(scan))), scan.events)
         # Move proper label events onto the nearest scan start
         # ASSUMPTION: Number of labels <= number of scans (i.e. only a single label allowed per scan)
         label.align(scan.events)
@@ -353,7 +354,7 @@ class H5DataV2(DataSet):
         if label.events[0] > 0:
             label.add(0, '')
         self.sensor['Observation/label'] = label
-        self.sensor['Observation/compscan_index'] = CategoricalData(range(len(label)), label.events)
+        self.sensor['Observation/compscan_index'] = CategoricalData(list(range(len(label))), label.events)
         # Use the target sensor of reference antenna to set the target for each scan
         target = self.sensor.get('Antennas/%s/target' % (self.ref_ant,))
         # Move target events onto the nearest scan start
@@ -379,7 +380,7 @@ class H5DataV2(DataSet):
     def _open(filename, mode='r'):
         """Open file and do basic version and augmentation sanity check."""
         f = h5py.File(filename, mode)
-        version = f.attrs.get('version', '1.x')
+        version = to_str(f.attrs.get('version', '1.x'))
         if not version.startswith('2.'):
             raise WrongVersion("Attempting to load version '%s' file with version 2 loader" % (version,))
         if 'augment_ts' not in f.attrs:
@@ -406,9 +407,9 @@ class H5DataV2(DataSet):
         f, version = H5DataV2._open(filename)
         config_group = f['MetaData/Configuration']
         all_ants = [ant for ant in config_group['Antennas']]
-        script_ants = config_group['Observation'].attrs.get('script_ants')
+        script_ants = to_str(config_group['Observation'].attrs.get('script_ants'))
         script_ants = script_ants.split(',') if script_ants else all_ants
-        return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description'])
+        return [katpoint.Antenna(to_str(config_group['Antennas'][ant].attrs['description']))
                 for ant in script_ants if ant in all_ants]
 
     @staticmethod
@@ -436,7 +437,7 @@ class H5DataV2(DataSet):
         except Exception:
             # Since h5py errors have varied over the years, we need Exception
             target_list = f['MetaData/Sensors/Beams/Beam0/target']
-        all_target_strings = [target_data[1] for target_data in target_list]
+        all_target_strings = [to_str(target_data[1]) for target_data in target_list]
         return katpoint.Catalogue(np.unique(all_target_strings))
 
     def __str__(self):
@@ -447,8 +448,10 @@ class H5DataV2(DataSet):
             descr.append('-------------------------------------------------------------------------------')
             descr.append('Process log:')
             for proc in self.file['History']['process_log']:
-                param_list = '%15s:' % proc[0]
-                for param in proc[1].split(','):
+                # proc has a structured dtype and to_str doesn't work on it, so
+                # we have to to_str each element.
+                param_list = '%15s:' % to_str(proc[0])
+                for param in to_str(proc[1]).split(','):
                     param_list += '  %s' % param
                 descr.append(param_list)
         return '\n'.join(descr)
@@ -462,8 +465,7 @@ class H5DataV2(DataSet):
     def _weights_keep(self, names):
         known_weights = [row[0] for row in getattr(self, '_weights_description', [])]
         # Ensure a sequence of weight names
-        names = known_weights if names == 'all' else \
-            names.split(',') if isinstance(names, basestring) else names
+        names = _selection_to_list(names, all=known_weights)
         # Create index list for desired weights
         selection = []
         for name in names:
@@ -493,9 +495,8 @@ class H5DataV2(DataSet):
             self._flags_select = np.array([0], dtype=np.uint8)
             return
         known_flags = [row[0] for row in self._flags_description]
-        # Ensure a sequence of flag names
-        names = known_flags if names == 'all' else \
-            names.split(',') if isinstance(names, basestring) else names
+        # Ensure `names` is a sequence of valid flag names (or an empty list)
+        names = _selection_to_list(names, all=known_flags)
         # Create boolean list for desired flags
         selection = np.zeros(8, dtype=np.uint8)
         assert len(known_flags) == len(selection), \

@@ -1,39 +1,24 @@
 """Data accessor class for HDF5 files produced by AVN DBE."""
 
-# TODO: flags. Currently raises NotImplementedError
-
-# TODO: Obs script log currently returns empty.
-
-# TODO: parangle
-
-# TODO: receivers comes up blank.
-
-# TODO: scans() also produces no useful results right now.
-
-# TODO: weights NotImplementedError. Should it be?
-
-
-
 import logging
 
 import numpy as np
 import h5py
 import katpoint
 
-from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow, \
+from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, \
     DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target
-from .sensordata import SensorData, SensorCache
+from .spectral_window import SpectralWindow
+from .sensordata import RecordSensorData, SensorCache
 from .categorical import CategoricalData, sensor_to_categorical
 from .lazy_indexer import LazyIndexer, LazyTransform
 
 logger = logging.getLogger(__name__)
 
-# TODO: This was a KAT-7 simplification. Do the same things apply to us? Should probably be discussed.
 # Simplify the scan activities to derive the basic state of the antenna (slewing, scanning, tracking, stopped)
 SIMPLIFY_STATE = {'scan_ready': 'slew', 'scan': 'scan', 'scan_complete': 'scan', 'track': 'track', 'slew': 'slew'}
 
 SENSOR_PROPS = dict(DEFAULT_SENSOR_PROPS)
-# TODO: I don't think we've implemented anything with this name on AVN at all, so we still need to decide.
 SENSOR_PROPS.update({
     '*activity': {'greedy_values': ('slew', 'stop'), 'initial_value': 'slew',
                   'transform': lambda act: SIMPLIFY_STATE.get(act, 'stop')},
@@ -44,6 +29,11 @@ SENSOR_PROPS.update({
     '*attenuation': {'categorical': True},
     '*attenuator.horizontal': {'categorical': True},
     '*attenuator.vertical': {'categorical': True},
+    'RFE/rfe.band.select.LCP': {'categorical': True},
+    'RFE/rfe.band.select.RCP': {'categorical': True},
+    'RFE/rfe.lo-intermediate.5GHz.frequency': {'categorical': True},
+    'RFE/rfe.lo-intermediate.6_7GHz.frequency': {'categorical': True},
+    'RFE/rfe.lo-final.frequency': {'categorical': True}
 })
 
 SENSOR_ALIASES = {
@@ -59,7 +49,6 @@ def _calc_azel(cache, name, ant="ant1"):
 VIRTUAL_SENSORS = dict(DEFAULT_VIRTUAL_SENSORS)
 VIRTUAL_SENSORS.update({'Antennas/{ant}/az': _calc_azel, 'Antennas/{ant}/el': _calc_azel})
 
-# TODO: We haven't implemented any flags as such yet. We can do, but then we must decide what to do with them.
 FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'detected_rfi', 'predicted_rfi', 'reserved6', 'reserved7')
 FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag based on live CAM information',
                      'reserved - bit 3', 'RFI detected in the online system', 'RFI predicted from space based pollutants',
@@ -68,6 +57,19 @@ FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag ba
 #--------------------------------------------------------------------------------------------------
 #--- Utility functions
 #--------------------------------------------------------------------------------------------------
+
+
+def make_pmodel_string(param_list):
+    """Take the h5 dataset that stores the AVN pointing model and convert it to a
+       string in the format that katpoint expects.
+    """
+    if not isinstance(param_list, h5py.Dataset):
+        raise ValueError("Error! param_list isn't an HDF5 dataset.")
+    model_string = ""
+    for param in param_list:
+        model_string += str(param) + " "
+    model_string = model_string[:-1]  # To take off the space on the end.
+    return model_string
 
 
 def get_single_value(group, name):
@@ -180,7 +182,7 @@ class H5DataV2_5(DataSet):
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
-        accumulation_length = get_single_value(config_group['DBE'], 'accum_length') # Accumulation length in number of FPGA frames.
+        accumulation_length = get_single_value(config_group['DBE'], 'accum_length')  # Accumulation length in number of FPGA frames.
         coarse_size = get_single_value(config_group["DBE"], "dbe.fft.coarse.size")
         fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
         sampling_frequency = 800e6  # Have to hardcode this for the time being.
@@ -247,7 +249,7 @@ class H5DataV2_5(DataSet):
         def register_sensor(name, obj):
             """A sensor is defined as a non-empty dataset with expected dtype."""
             if isinstance(obj, h5py.Dataset) and obj.shape != () and obj.dtype.names == ('timestamp', 'value', 'status'):
-                cache[name] = SensorData(obj, name)
+                cache[name] = RecordSensorData(obj, name)
         sensors_group.visititems(register_sensor)
         # Use estimated data timestamps for now, to speed up data segmentation
         self.sensor = SensorCache(cache, data_timestamps, self.dump_period, keep=self._time_keep,
@@ -266,10 +268,8 @@ class H5DataV2_5(DataSet):
                              (len(corrprods), self._vis.shape[2]))
         # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
         # This will change it into  "ant1lant1l,ant1rant1r" which katdal expects.
-        #corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
-        #             ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
-        # Hardcode H, V for now as L, R not supported in katdal + scape yet
-        corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
+        corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
+                     ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
 
         stokes_prods = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
@@ -278,38 +278,16 @@ class H5DataV2_5(DataSet):
                              (len(stokes_prods), self._stokes.shape[2]))
         # All antennas in configuration as katpoint Antenna objects
 
-        #TODO: This is perhaps not the best place for these functions. In the beginning perhaps?
-        def decimal2dms(decimal_degrees):
-            if decimal_degrees == 0:
-                return "0"
-            elif isinstance(decimal_degrees, int):
-                return str(decimal_degrees)
-            else:
-                degrees = int(decimal_degrees - (decimal_degrees % 1))
-                decimal_minutes = (decimal_degrees - degrees)*60.0
-                minutes = int(decimal_minutes - (decimal_minutes % 1))
-                decimal_seconds = (decimal_minutes - minutes) * 60.0
-                return "%d:%d:%.2f"%(degrees, minutes, decimal_seconds)
-
-        def make_string(param_list):
-            if not isinstance(param_list, h5py.Dataset):
-                raise ValueError("Error! param_list isn't an HDF5 dataset.")
-            model_string = ""
-            for param in param_list:
-                model_string += decimal2dms(param) + " "
-            model_string = model_string[:-1] # To take off the space on the end.
-            return model_string
-
         ants = []
         for antenna in config_group["Antennas"]:
-            name           = config_group["Antennas"][antenna].attrs['name']
-            latitude       = config_group["Antennas"][antenna].attrs['latitude']
-            longitude      = config_group["Antennas"][antenna].attrs['longitude']
-            altitude       = config_group["Antennas"][antenna].attrs['altitude']
-            diameter       = config_group["Antennas"][antenna].attrs['diameter']
-            delay_model    = "0 0 0" #TODO: Determine whether or not we need this.
-            pointing_model  = make_string(config_group["Antennas"][antenna]['pointing-model-params'])
-            beamwidth      = config_group["Antennas"][antenna].attrs['beamwidth']
+            name = config_group["Antennas"][antenna].attrs['name']
+            latitude = config_group["Antennas"][antenna].attrs['latitude']
+            longitude = config_group["Antennas"][antenna].attrs['longitude']
+            altitude = config_group["Antennas"][antenna].attrs['altitude']
+            diameter = config_group["Antennas"][antenna].attrs['diameter']
+            delay_model = None
+            pointing_model = make_pmodel_string(config_group["Antennas"][antenna]['pointing-model-params'])
+            beamwidth = config_group["Antennas"][antenna].attrs['beamwidth']
 
             ants.append(katpoint.Antenna(name, latitude, longitude, altitude, diameter, delay_model, pointing_model, beamwidth))
 
@@ -331,38 +309,32 @@ class H5DataV2_5(DataSet):
         num_chans = get_single_value(config_group['DBE'], 'n_chans')
         channel_width = bandwidth / num_chans
 
-        if False:
-            # Sky centre frequency = LO1 + LO2 - IF
-            # Ignoring the RCP for the time being, assuming both freqs are same.
-            band_select = self.sensor["RFE/rfe.band.select.LCP"]
-            LO_5GHz = self.sensor["RFE/rfe.lo0.chan0.frequency"]
-            LO_6p7GHz = self.sensor["RFE/rfe.lo0.chan1.frequency"]
-            LO_IF = self.sensor["RFE/rfe.lo1.frequency"]
+        # Sky centre frequency = LO1 + LO2 - IF
+        band_select = self.sensor["RFE/rfe.band.select.LCP"]
+        LO_5GHz = self.sensor["RFE/rfe.lo-intermediate.5GHz.frequency"]
+        LO_6p7GHz = self.sensor["RFE/rfe.lo-intermediate.6_7GHz.frequency"]
+        LO_final = self.sensor["RFE/rfe.lo-final.frequency"]
 
-            centre_freq = []
-            #TODO: Katdal doesn't seem to support different frequencies for the L or R case.
-            # By default assume a wideband / radiometer mode.
-            for i in range(len(band_select)):
-                if band_select[i] == "0":
-                    centre_freq.append(LO_5GHz[i] + LO_IF[i] - 600e6)
-                elif band_select[i] == "1":
-                    centre_freq.append(LO_6p7GHz[i] + LO_IF[i] - 600e6)
-                else:
-                    raise BrokenFile("Invalid receiver band selection.")
-                print "Added band: ", centre_freq[-1]
-            centre_freq = np.array(centre_freq)
+        centre_freq_5GHz = LO_5GHz + LO_final - 600e6;
+        centre_freq_6p7GHz = LO_6p7GHz + LO_final - 600e6;
 
-            # If we aren't in wideband mode, then we need to do some additional tweaking:
-            if (fine_size != 0):
-                centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
-                coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
-                narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
-                print centre_freq.shape
-                print narrowband_channel_select.shape
-                print coarse_channel_bandwidth
-                centre_freq += narrowband_channel_select * coarse_channel_bandwidth
+        centre_freq = np.zeros(len(band_select))
+        for i in range(len(centre_freq)):
+            if band_select[i] == "0":
+                centre_freq[i] = centre_freq_5GHz[i]
+            elif band_select[i] == "1":
+                centre_freq[i] = centre_freq_6p7GHz[i]
+            else:
+                raise BrokenFile("Unknown band selection, seems to be neither 5 GHz nor 6.7 GHz.")
 
-        centre_freq = float(raw_input("Please manually enter centre frequency (Hz): "))
+        # If we aren't in wideband mode, then we need to do some additional tweaking:
+        if (fine_size != 0):
+            centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
+            coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
+            narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
+            centre_freq += narrowband_channel_select * coarse_channel_bandwidth
+
+        centre_freq = sensor_to_categorical(self._timestamps, centre_freq, data_timestamps, self.dump_period)
 
         if num_chans != self._vis.shape[1]:
             raise BrokenFile('Number of channels received from DBE '
@@ -373,25 +345,15 @@ class H5DataV2_5(DataSet):
         # So I think our "sideband" value should be 1.
         sideband = 1
 
-        # try:
-        #     mode = self.sensor.get('DBE/dbe.mode').unique_values[0]  # TODO: Determine what our DBE modes are going to be.
-        # except KeyError, IndexError:
-        #     # Guess the mode for version 2.0 files that haven't been re-augmented
-        #     mode = 'wbc' if num_chans <= 1024 else 'wbc8k' if bandwidth > 200e6 else 'nbc'
-
-        if False:
-            self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
-                                     for spw_centre in centre_freq.unique_values]
-            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
-                                                             centre_freq.events)
-            self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
-        else:
-            self.spectral_windows = [SpectralWindow(centre_freq, channel_width, num_chans, sideband=sideband)]
-            self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[0]], [0, num_dumps])
-            self.sensor['Observation/spw_index'] = CategoricalData([0], [0, num_dumps])
+        self.spectral_windows = [SpectralWindow(spw_centre, channel_width, num_chans, mode)
+                                 for spw_centre in centre_freq.unique_values]
+        self.sensor['Observation/spw'] = CategoricalData([self.spectral_windows[idx] for idx in centre_freq.indices],
+                                                         centre_freq.events)
+        self.sensor['Observation/spw_index'] = CategoricalData(centre_freq.indices, centre_freq.events)
 
         # ------ Extract scans / compound scans / targets ------
         # Use the activity sensor of reference antenna to partition the data set into scans (and to set their states)
+
         scan = self.sensor.get('Antennas/%s/activity' % (self.ref_ant,))
         # If the antenna starts slewing on the second dump, incorporate the first dump into the slew too.
         # This scenario typically occurs when the first target is only set after the first dump is received.
@@ -404,7 +366,6 @@ class H5DataV2_5(DataSet):
                                       data_timestamps, self.dump_period, **SENSOR_PROPS['Observation/label'])
         # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
         # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
-        # TODO: Decide whether to keep this check.
         if len(label.unique_values) > 1:
             label.remove('')
         # Create duplicate scan events where labels are set during a scan (i.e. not at start of scan)
@@ -449,7 +410,6 @@ class H5DataV2_5(DataSet):
         version = f.attrs.get('version', '1.x')
         if not version == '2.5':
             raise WrongVersion("Attempting to load version '%s' file with version 2.5 loader" % (version,))
-        # TODO: decide whether to keep this.
         if 'augment_ts' not in f.attrs:
             raise BrokenFile('HDF5 file not augmented - please run dummy_augment.py in the scripts directory.')
 
@@ -473,13 +433,16 @@ class H5DataV2_5(DataSet):
         """
         f, version = H5DataV2_5._open(filename)
         config_group = f['MetaData/Configuration']
-        all_ants = [ant for ant in config_group['Antennas']]
-        script_ants = config_group['Observation'].attrs.get('script_ants')
-        script_ants = script_ants.split(',') if script_ants else all_ants
-        #return [katpoint.Antenna(config_group['Antennas'][ant].attrs['description']) for ant in script_ants if ant in all_ants]
-        # TODO: This is hardcoded for the Ghana antenna. Just to make scape stop complaining. Do need to fix at some point.
-        # TODO: The "beamwidth factor" (see katpoint docs) typically ranges from 1.03 to 1.22 - find appropriate value for Ghana antenna
-        return [katpoint.Antenna("ant1, 5:45:01.5, -0:18:17.93, 116.0, 32.0, 0.0 0.0 0.0, 0:00:00.0 0 0 0 0 0 0:00:00.0, 1.22")]
+
+        # Only one antenna in an AVN file.
+        return [katpoint.Antenna(config_group["Antennas/ant1"].attrs["name"],
+                                 config_group["Antennas/ant1"].attrs["latitude"],
+                                 config_group["Antennas/ant1"].attrs["longitude"],
+                                 config_group["Antennas/ant1"].attrs["altitude"],
+                                 config_group["Antennas/ant1"].attrs["diameter"],
+                                 None,
+                                 make_pmodel_string(config_group["Antennas/ant1"]['pointing-model-params']),
+                                 config_group["Antennas/ant1"].attrs["beamwidth"]) ]
 
     @staticmethod
     def _get_targets(filename):
@@ -501,27 +464,13 @@ class H5DataV2_5(DataSet):
         f, version = H5DataV2_5._open(filename)
         # Use the delay-tracking centre as the one and only target
         # Try two different sensors for the DBE target
-        try:
-            target_list = f['MetaData/Sensors/DBE/target']
-        except Exception:
-            # Since h5py errors have varied over the years, we need Exception
-            target_list = f['MetaData/Sensors/Beams/Beam0/target']
+        target_list = f['MetaData/Sensors/Antennas/ant1/target']
         all_target_strings = [target_data[1] for target_data in target_list]
         return katpoint.Catalogue(np.unique(all_target_strings))
 
     def __str__(self):
         """Verbose human-friendly string representation of data set."""
         descr = [super(H5DataV2_5, self).__str__()]
-        # append the process_log, if it exists, for non-concatenated h5 files
-        # TODO: commented out. Our file format doesn't have a "History" (yet?).
-        #if 'process_log' in self.file['History']:
-        #    descr.append('-------------------------------------------------------------------------------')
-        #    descr.append('Process log:')
-        #    for proc in self.file['History']['process_log']:
-        #        param_list = '%15s:' % proc[0]
-        #        for param in proc[1].split(','):
-        #            param_list += '  %s' % param
-        #        descr.append(param_list)
         return '\n'.join(descr)
 
     @property
@@ -680,52 +629,3 @@ class H5DataV2_5(DataSet):
     def wind_direction(self):
         """Wind direction as an azimuth angle in degrees."""
         return self.sensor['Enviro/wind.direction']
-
-    # TODO: Haven't implemented any flags just yet.
-    # def flags(self, names=None):
-    #     """Flags as a function of time, frequency and baseline.
-    #
-    #     Parameters
-    #     ----------
-    #     names : None or string or sequence of strings, optional
-    #         List of names of flags that will be OR'ed together, as a sequence or
-    #         a string of comma-separated names (use all flags by default)
-    #
-    #     Returns
-    #     -------
-    #     flags : :class:`LazyIndexer` object of bool, shape (*T*, *F*, *B*)
-    #         Array indexer with time along the first dimension, frequency along
-    #         the second dimension and correlation product ("baseline") index
-    #         along the third dimension. To get the data array itself from the
-    #         indexer `x`, do `x[:]` or perform any other form of indexing on it.
-    #         Only then will data be loaded into memory.
-    #
-    #     """
-    #     names = names.split(',') if isinstance(names, basestring) else FLAG_NAMES if names is None else names
-    #
-    #     # Create index list for desired flags
-    #     flagmask = np.zeros(8, dtype=np.int)
-    #     known_flags = [row[0] for row in self._flags_description]
-    #     for name in names:
-    #         try:
-    #             flagmask[known_flags.index(name)] = 1
-    #         except ValueError:
-    #             logger.warning("'%s' is not a legitimate flag type for this file" % (name,))
-    #     # Pack index list into bit mask
-    #     flagmask = np.packbits(flagmask)
-    #     if not flagmask:
-    #         logger.warning('No valid flags were selected - setting all flags to False by default')
-    #
-    #     def _extract_flags(flags, keep):
-    #         # Ensure that keep tuple has length of 3 (truncate or pad with blanket slices as necessary)
-    #         keep = keep[:3] + (slice(None),) * (3 - len(keep))
-    #         # Final indexing ensures that returned data are always 3-dimensional (i.e. keep singleton dimensions)
-    #         force_3dim = tuple([(np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep])
-    #         flags_3dim = flags[force_3dim]
-    #         # Use flagmask to blank out the flags we don't want
-    #         total_flags = np.bitwise_and(flagmask, flags_3dim)
-    #         # Convert uint8 to bool: if any flag bits set, flag is set
-    #         return np.bool_(total_flags)
-    #     extract_flags = LazyTransform('extract_flags', _extract_flags, dtype=np.bool)
-    #     return LazyIndexer(self._flags, (self._time_keep, self._freq_keep, self._corrprod_keep),
-    #                        transforms=[extract_flags])
