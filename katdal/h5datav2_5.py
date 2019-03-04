@@ -19,8 +19,9 @@ import numpy as np
 import h5py
 import katpoint
 
-from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, SpectralWindow, \
+from .dataset import DataSet, WrongVersion, BrokenFile, Subarray, \
     DEFAULT_SENSOR_PROPS, DEFAULT_VIRTUAL_SENSORS, _robust_target
+from .spectral_window import SpectralWindow
 from .sensordata import RecordSensorData, SensorCache
 from .categorical import CategoricalData, sensor_to_categorical
 from .lazy_indexer import LazyIndexer, LazyTransform
@@ -270,11 +271,11 @@ class H5DataV2_5(DataSet):
                              (len(corrprods), self._vis.shape[2]))
         # Get the corrprod labels into the format that KatDAL wants, the v2.5 files only give ll and rr.
         # This will change it into  "ant1lant1l,ant1rant1r" which katdal expects.
-        # corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
-        #             ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
+        corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
+                     ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
         # Hardcode H, V for now as L, R not supported in katdal + scape yet
         # TODO: This is a hack.
-        corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
+        #corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
 
         stokes_prods = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
@@ -328,7 +329,6 @@ class H5DataV2_5(DataSet):
         channel_width = bandwidth / num_chans
 
         # Sky centre frequency = LO1 + LO2 - IF
-        # TODO: Figure out how to handle if LCP and RCP are different.
         band_select = self.sensor["RFE/rfe.band.select.LCP"]
         LO_5GHz = self.sensor["RFE/rfe.lo-intermediate.5GHz.frequency"]
         LO_6p7GHz = self.sensor["RFE/rfe.lo-intermediate.6_7GHz.frequency"]
