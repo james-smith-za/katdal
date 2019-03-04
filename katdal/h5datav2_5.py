@@ -1,18 +1,5 @@
 """Data accessor class for HDF5 files produced by AVN DBE."""
 
-# TODO: flags. Currently raises NotImplementedError
-
-# TODO: Obs script log currently returns empty.
-
-# TODO: parangle
-
-# TODO: receivers comes up blank.
-
-# TODO: scans() also produces no useful results right now.
-
-# TODO: weights NotImplementedError. Should it be?
-
-# TODO: Check that radians and degrees are used correctly.
 import logging
 
 import numpy as np
@@ -28,12 +15,10 @@ from .lazy_indexer import LazyIndexer, LazyTransform
 
 logger = logging.getLogger(__name__)
 
-# TODO: This was a KAT-7 simplification. Do the same things apply to us? Should probably be discussed.
 # Simplify the scan activities to derive the basic state of the antenna (slewing, scanning, tracking, stopped)
 SIMPLIFY_STATE = {'scan_ready': 'slew', 'scan': 'scan', 'scan_complete': 'scan', 'track': 'track', 'slew': 'slew'}
 
 SENSOR_PROPS = dict(DEFAULT_SENSOR_PROPS)
-# TODO: I don't think we've implemented anything with this name on AVN at all, so we still need to decide.
 SENSOR_PROPS.update({
     '*activity': {'greedy_values': ('slew', 'stop'), 'initial_value': 'slew',
                   'transform': lambda act: SIMPLIFY_STATE.get(act, 'stop')},
@@ -64,7 +49,6 @@ def _calc_azel(cache, name, ant="ant1"):
 VIRTUAL_SENSORS = dict(DEFAULT_VIRTUAL_SENSORS)
 VIRTUAL_SENSORS.update({'Antennas/{ant}/az': _calc_azel, 'Antennas/{ant}/el': _calc_azel})
 
-# TODO: We haven't implemented any flags as such yet. We can do, but then we must decide what to do with them.
 FLAG_NAMES = ('reserved0', 'static', 'cam', 'reserved3', 'detected_rfi', 'predicted_rfi', 'reserved6', 'reserved7')
 FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag based on live CAM information',
                      'reserved - bit 3', 'RFI detected in the online system', 'RFI predicted from space based pollutants',
@@ -73,6 +57,19 @@ FLAG_DESCRIPTIONS = ('reserved - bit 0', 'predefined static flag list', 'flag ba
 #--------------------------------------------------------------------------------------------------
 #--- Utility functions
 #--------------------------------------------------------------------------------------------------
+
+
+def make_pmodel_string(param_list):
+    """Take the h5 dataset that stores the AVN pointing model and convert it to a
+       string in the format that katpoint expects.
+    """
+    if not isinstance(param_list, h5py.Dataset):
+        raise ValueError("Error! param_list isn't an HDF5 dataset.")
+    model_string = ""
+    for param in param_list:
+        model_string += str(param) + " "
+    model_string = model_string[:-1]  # To take off the space on the end.
+    return model_string
 
 
 def get_single_value(group, name):
@@ -185,7 +182,7 @@ class H5DataV2_5(DataSet):
         self.experiment_id = self.obs_params.get('experiment_id', '')
 
         # ------ Extract timestamps ------
-        accumulation_length = get_single_value(config_group['DBE'], 'accum_length') # Accumulation length in number of FPGA frames.
+        accumulation_length = get_single_value(config_group['DBE'], 'accum_length')  # Accumulation length in number of FPGA frames.
         coarse_size = get_single_value(config_group["DBE"], "dbe.fft.coarse.size")
         fine_size = get_single_value(config_group["DBE"], "dbe.fft.fine.size")
         sampling_frequency = 800e6  # Have to hardcode this for the time being.
@@ -273,9 +270,6 @@ class H5DataV2_5(DataSet):
         # This will change it into  "ant1lant1l,ant1rant1r" which katdal expects.
         corrprods = [('ant1' + corrprods[0][0], 'ant1' + corrprods[0][1]),
                      ('ant1' + corrprods[1][0], 'ant1' + corrprods[1][1])]
-        # Hardcode H, V for now as L, R not supported in katdal + scape yet
-        # TODO: This is a hack.
-        #corrprods = [('ant1h', 'ant1h'), ('ant1v', 'ant1v')]
 
         stokes_prods = get_single_value(config_group["DBE"], "stokes_ordering").split(',')
         if len(stokes_prods) != self._stokes.shape[2]:
@@ -283,19 +277,6 @@ class H5DataV2_5(DataSet):
                              'received from h5 file (%d) differs from number of Stokes products in data (%d)' %
                              (len(stokes_prods), self._stokes.shape[2]))
         # All antennas in configuration as katpoint Antenna objects
-
-        # TODO: This is perhaps not the best place for this. In the beginning perhaps?
-        def make_pmodel_string(param_list):
-            """Take the h5 dataset that stores the AVN pointing model and convert it to a
-               string in the format that katpoint expects.
-            """
-            if not isinstance(param_list, h5py.Dataset):
-                raise ValueError("Error! param_list isn't an HDF5 dataset.")
-            model_string = ""
-            for param in param_list:
-                model_string += str(param) + " "
-            model_string = model_string[:-1] # To take off the space on the end.
-            return model_string
 
         ants = []
         for antenna in config_group["Antennas"]:
@@ -347,14 +328,11 @@ class H5DataV2_5(DataSet):
                 raise BrokenFile("Unknown band selection, seems to be neither 5 GHz nor 6.7 GHz.")
 
         # If we aren't in wideband mode, then we need to do some additional tweaking:
-        # TODO: Make sure this is consistent. I think I may be doing more than I need to here.
         if (fine_size != 0):
             centre_freq -= 200e6  # Because we're going to count from the bottom of the band.
             coarse_channel_bandwidth = 400E6 / (coarse_size / 2)
             narrowband_channel_select = self.sensor["DBE/dbe.nb-chan"]
             centre_freq += narrowband_channel_select * coarse_channel_bandwidth
-
-        # TODO: Verify that this has worked. Seems to be but I need to put in more realistic test values.
 
         centre_freq = sensor_to_categorical(self._timestamps, centre_freq, data_timestamps, self.dump_period)
 
@@ -388,7 +366,6 @@ class H5DataV2_5(DataSet):
                                       data_timestamps, self.dump_period, **SENSOR_PROPS['Observation/label'])
         # Discard empty labels (typically found in raster scans, where first scan has proper label and rest are empty)
         # However, if all labels are empty, keep them, otherwise whole data set will be one pathological compscan...
-        # TODO: Decide whether to keep this check.
         if len(label.unique_values) > 1:
             label.remove('')
         # Create duplicate scan events where labels are set during a scan (i.e. not at start of scan)
@@ -433,7 +410,6 @@ class H5DataV2_5(DataSet):
         version = f.attrs.get('version', '1.x')
         if not version == '2.5':
             raise WrongVersion("Attempting to load version '%s' file with version 2.5 loader" % (version,))
-        # TODO: decide whether to keep this.
         if 'augment_ts' not in f.attrs:
             raise BrokenFile('HDF5 file not augmented - please run dummy_augment.py in the scripts directory.')
 
@@ -458,9 +434,6 @@ class H5DataV2_5(DataSet):
         f, version = H5DataV2_5._open(filename)
         config_group = f['MetaData/Configuration']
 
-        # TODO: The "beamwidth factor" (see katpoint docs) typically ranges from 1.03 to 1.22
-        # find appropriate value for Ghana antenna
-
         # Only one antenna in an AVN file.
         return [katpoint.Antenna(config_group["Antennas/ant1"].attrs["name"],
                                  config_group["Antennas/ant1"].attrs["latitude"],
@@ -468,7 +441,7 @@ class H5DataV2_5(DataSet):
                                  config_group["Antennas/ant1"].attrs["altitude"],
                                  config_group["Antennas/ant1"].attrs["diameter"],
                                  None,
-                                 make_pmodel_string(config_group["Antennas"][antenna]['pointing-model-params']),
+                                 make_pmodel_string(config_group["Antennas/ant1"]['pointing-model-params']),
                                  config_group["Antennas/ant1"].attrs["beamwidth"]) ]
 
     @staticmethod
@@ -498,16 +471,6 @@ class H5DataV2_5(DataSet):
     def __str__(self):
         """Verbose human-friendly string representation of data set."""
         descr = [super(H5DataV2_5, self).__str__()]
-        # append the process_log, if it exists, for non-concatenated h5 files
-        # TODO: commented out. Our file format doesn't have a "History" (yet?).
-        #if 'process_log' in self.file['History']:
-        #    descr.append('-------------------------------------------------------------------------------')
-        #    descr.append('Process log:')
-        #    for proc in self.file['History']['process_log']:
-        #        param_list = '%15s:' % proc[0]
-        #        for param in proc[1].split(','):
-        #            param_list += '  %s' % param
-        #        descr.append(param_list)
         return '\n'.join(descr)
 
     @property
@@ -666,52 +629,3 @@ class H5DataV2_5(DataSet):
     def wind_direction(self):
         """Wind direction as an azimuth angle in degrees."""
         return self.sensor['Enviro/wind.direction']
-
-    # TODO: Haven't implemented any flags just yet.
-    # def flags(self, names=None):
-    #     """Flags as a function of time, frequency and baseline.
-    #
-    #     Parameters
-    #     ----------
-    #     names : None or string or sequence of strings, optional
-    #         List of names of flags that will be OR'ed together, as a sequence or
-    #         a string of comma-separated names (use all flags by default)
-    #
-    #     Returns
-    #     -------
-    #     flags : :class:`LazyIndexer` object of bool, shape (*T*, *F*, *B*)
-    #         Array indexer with time along the first dimension, frequency along
-    #         the second dimension and correlation product ("baseline") index
-    #         along the third dimension. To get the data array itself from the
-    #         indexer `x`, do `x[:]` or perform any other form of indexing on it.
-    #         Only then will data be loaded into memory.
-    #
-    #     """
-    #     names = names.split(',') if isinstance(names, basestring) else FLAG_NAMES if names is None else names
-    #
-    #     # Create index list for desired flags
-    #     flagmask = np.zeros(8, dtype=np.int)
-    #     known_flags = [row[0] for row in self._flags_description]
-    #     for name in names:
-    #         try:
-    #             flagmask[known_flags.index(name)] = 1
-    #         except ValueError:
-    #             logger.warning("'%s' is not a legitimate flag type for this file" % (name,))
-    #     # Pack index list into bit mask
-    #     flagmask = np.packbits(flagmask)
-    #     if not flagmask:
-    #         logger.warning('No valid flags were selected - setting all flags to False by default')
-    #
-    #     def _extract_flags(flags, keep):
-    #         # Ensure that keep tuple has length of 3 (truncate or pad with blanket slices as necessary)
-    #         keep = keep[:3] + (slice(None),) * (3 - len(keep))
-    #         # Final indexing ensures that returned data are always 3-dimensional (i.e. keep singleton dimensions)
-    #         force_3dim = tuple([(np.newaxis if np.isscalar(dim_keep) else slice(None)) for dim_keep in keep])
-    #         flags_3dim = flags[force_3dim]
-    #         # Use flagmask to blank out the flags we don't want
-    #         total_flags = np.bitwise_and(flagmask, flags_3dim)
-    #         # Convert uint8 to bool: if any flag bits set, flag is set
-    #         return np.bool_(total_flags)
-    #     extract_flags = LazyTransform('extract_flags', _extract_flags, dtype=np.bool)
-    #     return LazyIndexer(self._flags, (self._time_keep, self._freq_keep, self._corrprod_keep),
-    #                        transforms=[extract_flags])
